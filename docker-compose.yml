@@ -1,0 +1,130 @@
+# Two ways to use this file:
+#
+#   docker compose up -d                  Postgres + Redis only. The default for
+#                                         day-to-day work — run the app natively
+#                                         (`make api`, `make worker`) for a fast
+#                                         edit/restart loop.
+#
+#   docker compose --profile app up       The whole stack in containers, migrated
+#                                         and wired together. For a clean checkout,
+#                                         a demo, or a smoke test of the image you
+#                                         are about to deploy.
+#
+# The Postgres here stands in for Supabase during development. In production the
+# database is managed: point BOOKS_DATABASE_URL at Supabase and run only the app
+# services (see README, "Production").
+
+x-app: &app
+  build:
+    context: .
+  image: books:local
+  environment: &app-env
+    BOOKS_ENV: ${BOOKS_ENV:-local}
+    BOOKS_LOG_LEVEL: ${BOOKS_LOG_LEVEL:-INFO}
+    # Service names, not localhost: these resolve on the compose network.
+    BOOKS_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/books
+    BOOKS_REDIS_URL: redis://redis:6379/0
+    BOOKS_API_BASE_URL: http://api:8000
+    BOOKS_API_TOKEN: ${BOOKS_API_TOKEN:-local-dev-token}
+    # Read from your .env, which compose loads automatically. Left empty rather
+    # than required so `docker compose up -d` (infra only) works on a clean
+    # checkout; the app reports a clear error if it needs one and it is missing.
+    BOOKS_ENCRYPTION_KEY: ${BOOKS_ENCRYPTION_KEY:-}
+    BOOKS_DEFAULT_PROVIDER: ${BOOKS_DEFAULT_PROVIDER:-plaid}
+    BOOKS_PLAID_ENV: ${BOOKS_PLAID_ENV:-sandbox}
+    BOOKS_PLAID_CLIENT_ID: ${BOOKS_PLAID_CLIENT_ID:-}
+    BOOKS_PLAID_SECRET: ${BOOKS_PLAID_SECRET:-}
+    BOOKS_PLAID_WEBHOOK_URL: ${BOOKS_PLAID_WEBHOOK_URL:-}
+    BOOKS_ANTHROPIC_API_KEY: ${BOOKS_ANTHROPIC_API_KEY:-}
+    BOOKS_CATEGORIZER_MODEL: ${BOOKS_CATEGORIZER_MODEL:-claude-sonnet-5}
+    BOOKS_CONFIDENCE_THRESHOLD: ${BOOKS_CONFIDENCE_THRESHOLD:-0.80}
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: books
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- app services: only started with `--profile app` -----------------------
+
+  migrate:
+    <<: *app
+    profiles: ["app"]
+    command: alembic upgrade head
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    profiles: ["app"]
+    command: uvicorn books.faces.api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request, sys
+          with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=4) as r:
+              sys.exit(0 if r.status == 200 else 1)
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  worker:
+    <<: *app
+    profiles: ["app"]
+    command: celery -A books.workers.app.celery_app worker -Q books -l info
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  beat:
+    <<: *app
+    profiles: ["app"]
+    # Beat only enqueues the hourly sync safety net; the worker does the work.
+    # Its schedule file goes to /tmp so the image still works if /app is
+    # mounted read-only.
+    command: >
+      celery -A books.workers.app.celery_app beat -l info
+      --schedule /tmp/celerybeat-schedule
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

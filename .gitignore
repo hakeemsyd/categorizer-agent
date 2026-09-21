@@ -1,0 +1,39 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.python-version
+
+# --- Tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Secrets / local config ---
+# Never commit real credentials: Plaid keys, Supabase URLs, the Fernet key
+# that decrypts stored access tokens, or Anthropic keys.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --- Runtime artifacts ---
+celerybeat-schedule*
+*.log
+logs/
+.books/
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+.DS_Store

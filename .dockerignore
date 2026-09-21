@@ -1,0 +1,27 @@
+# Keep the build context small and secrets out of the image.
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.git/
+.github/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+tests/
+*.log
+logs/
+.idea/
+.vscode/
+.DS_Store
+docker-compose.yml
+Dockerfile
+Makefile
+README.md
+plan.md

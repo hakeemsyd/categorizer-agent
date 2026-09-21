@@ -1,0 +1,20 @@
+name,account_type,description
+Consulting & Services Revenue,revenue,Client payments for services rendered
+Other Income,revenue,"Rebates, grants and one-off income"
+Payroll & Wages,expense,"Salaries, contractor payments, payroll provider fees"
+Software & Subscriptions,expense,SaaS tools and licences billed per seat or month
+Cloud & Hosting,expense,"Usage-billed infrastructure: AWS, GCP, CDNs, domains"
+Professional Services,expense,"Legal, accounting, advisory"
+Marketing & Advertising,expense,"Ads, sponsorships, content production"
+Travel,expense,"Flights, hotels, ground transport for client work"
+Meals & Entertainment,expense,Client meals and team events
+Office & Equipment,expense,"Hardware, furniture, office supplies"
+Bank & Merchant Fees,expense,"Wire fees, card processing, FX spread"
+Taxes & Licences,expense,"Franchise tax, business licences, permits"
+Accounts Receivable,asset,Invoiced work the client has not paid yet
+Transfers Between Accounts,asset,Movement between accounts you own — neither income nor expense
+Credit Card Payable,liability,Balance owed on a company card
+Loans Payable,liability,Loan principal — interest goes to Interest Expense
+Sales Tax Payable,liability,Tax collected from customers and owed on
+Owner Contribution,equity,Money the owner put into the business
+Owner Draw,equity,Money the owner took out — not payroll
