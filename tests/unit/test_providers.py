@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import inspect
 from datetime import date
-from decimal import Decimal
 
 import pytest
 
@@ -25,7 +24,7 @@ PROTOCOL_METHODS = [
 ]
 
 
-@pytest.mark.parametrize("provider_name", ["plaid", "fake"])
+@pytest.mark.parametrize("provider_name", ["teller", "fake"])
 def test_every_registered_provider_implements_the_protocol(provider_name: str) -> None:
     provider = get_provider(provider_name)
     assert isinstance(provider, TransactionProvider)
@@ -33,7 +32,7 @@ def test_every_registered_provider_implements_the_protocol(provider_name: str) -
         assert callable(getattr(provider, method)), f"{provider_name} is missing {method}"
 
 
-@pytest.mark.parametrize("provider_name", ["plaid", "fake"])
+@pytest.mark.parametrize("provider_name", ["teller", "fake"])
 def test_signatures_match_the_protocol(provider_name: str) -> None:
     provider = get_provider(provider_name)
     for method in PROTOCOL_METHODS:
@@ -50,7 +49,7 @@ def test_unknown_provider_is_a_configuration_error() -> None:
 
 
 def test_registry_lists_what_is_available() -> None:
-    assert {"plaid", "fake"} <= set(available_providers())
+    assert {"teller", "fake"} <= set(available_providers())
 
 
 def test_fake_provider_paginates_by_cursor() -> None:
@@ -80,56 +79,3 @@ def test_fake_provider_paginates_by_cursor() -> None:
     assert second.removed == ["a"] and not second.has_more
     # Draining past the end is a no-op, not an error.
     assert provider.sync_transactions("token", "c2").added == []
-
-
-def test_plaid_normalizes_amount_sign_and_shape() -> None:
-    """Plaid reports money out as positive; we store signed amounts."""
-    from books.providers.plaid import PlaidProvider
-
-    raw = PlaidProvider._to_transaction(
-        {
-            "transaction_id": "tx-1",
-            "account_id": "acct-1",
-            "amount": 412.55,  # Plaid: money leaving the account
-            "date": "2026-02-14",
-            "merchant_name": "Amazon Web Services",
-            "name": "AWS",
-            "original_description": "AMAZON WEB SERVICES AWS.AMAZON.CO",
-            "pending": False,
-            "personal_finance_category": {"primary": "GENERAL_SERVICES", "detailed": "CLOUD"},
-        }
-    )
-    assert raw.amount == Decimal("-412.55")
-    assert raw.date == date(2026, 2, 14)
-    assert raw.merchant_name == "Amazon Web Services"
-    assert raw.provider_category == "CLOUD"
-    assert raw.raw_payload["transaction_id"] == "tx-1"
-
-
-def test_plaid_webhook_codes_map_to_normalized_events() -> None:
-    from books.providers.base import EVENT_ITEM_REVOKED, EVENT_SYNC_AVAILABLE, EVENT_UNKNOWN
-    from books.providers.plaid import PlaidProvider
-
-    provider = PlaidProvider()
-    assert (
-        provider.parse_webhook(
-            {
-                "webhook_type": "TRANSACTIONS",
-                "webhook_code": "SYNC_UPDATES_AVAILABLE",
-                "item_id": "i",
-            }
-        ).event_type
-        == EVENT_SYNC_AVAILABLE
-    )
-    assert (
-        provider.parse_webhook(
-            {"webhook_type": "ITEM", "webhook_code": "USER_PERMISSION_REVOKED", "item_id": "i"}
-        ).event_type
-        == EVENT_ITEM_REVOKED
-    )
-    assert (
-        provider.parse_webhook(
-            {"webhook_type": "ASSETS", "webhook_code": "PRODUCT_READY"}
-        ).event_type
-        == EVENT_UNKNOWN
-    )

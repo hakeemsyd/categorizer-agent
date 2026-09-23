@@ -148,6 +148,82 @@ async def test_confirming_an_uncategorized_transaction_is_refused(session, busin
         await confirm_category(session, transaction=transaction, actor="cli:hakeem")
 
 
+# --- protecting a human review from being overwritten -------------------
+
+
+async def test_a_non_reviewing_write_is_refused_once_a_human_reviewed(
+    session, business, chart_of_accounts, linked_item
+):
+    """The core guard: an agent-style write must never clobber a human's call."""
+    transaction = await _one_transaction(session, business)
+    await confirm_category_after_setting(
+        session, transaction, chart_of_accounts["Payroll"].id, actor="cli:hakeem"
+    )
+
+    with pytest.raises(ValidationError, match="reviewed by a human"):
+        await apply_category(
+            session,
+            transaction=transaction,
+            category_id=chart_of_accounts["Travel"].id,
+            actor="agent:categorizer-v1",
+            confidence=0.9,
+        )
+    # The refusal must not have touched anything.
+    assert transaction.category_id == chart_of_accounts["Payroll"].id
+
+
+async def test_force_overrides_the_review_protection_deliberately(
+    session, business, chart_of_accounts, linked_item
+):
+    transaction = await _one_transaction(session, business)
+    await confirm_category_after_setting(
+        session, transaction, chart_of_accounts["Payroll"].id, actor="cli:hakeem"
+    )
+
+    await apply_category(
+        session,
+        transaction=transaction,
+        category_id=chart_of_accounts["Travel"].id,
+        actor="agent:categorizer-v1",
+        confidence=0.9,
+        force=True,
+    )
+    assert transaction.category_id == chart_of_accounts["Travel"].id
+
+
+async def test_a_human_write_never_needs_force_even_after_a_prior_review(
+    session, business, chart_of_accounts, linked_item
+):
+    """mark_reviewed=True is itself the override — a human correcting their
+    own earlier review must never need `force` too."""
+    transaction = await _one_transaction(session, business)
+    await confirm_category_after_setting(
+        session, transaction, chart_of_accounts["Payroll"].id, actor="cli:hakeem"
+    )
+
+    await apply_category(
+        session,
+        transaction=transaction,
+        category_id=chart_of_accounts["Travel"].id,
+        actor="cli:hakeem",
+        confidence=1.0,
+        mark_reviewed=True,
+    )
+    assert transaction.category_id == chart_of_accounts["Travel"].id
+
+
+async def confirm_category_after_setting(session, transaction, category_id, *, actor):
+    """Helper: get a transaction into a real "reviewed" state for these tests."""
+    await apply_category(
+        session,
+        transaction=transaction,
+        category_id=category_id,
+        actor=actor,
+        confidence=1.0,
+        mark_reviewed=True,
+    )
+
+
 # --- the agent graph ----------------------------------------------------
 
 

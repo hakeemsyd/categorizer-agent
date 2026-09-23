@@ -68,18 +68,20 @@ async def _sync(item_id: uuid.UUID, backfill: bool, since: date | None) -> dict[
     retry_jitter=True,
     max_retries=3,
 )
-def categorize_transaction(self, transaction_id: str) -> dict[str, Any]:
+def categorize_transaction(self, transaction_id: str, force: bool = False) -> dict[str, Any]:
     try:
-        return run_async(_categorize(uuid.UUID(transaction_id)))
+        return run_async(_categorize(uuid.UUID(transaction_id), force=force))
     except BooksError:
+        # Includes a refusal to overwrite a human-reviewed transaction
+        # (ValidationError) — a real outcome, not worth retrying.
         raise
     except Exception as exc:  # transient model/network failure
         raise self.retry(exc=exc) from exc
 
 
-async def _categorize(transaction_id: uuid.UUID) -> dict[str, Any]:
+async def _categorize(transaction_id: uuid.UUID, force: bool = False) -> dict[str, Any]:
     async with session_scope() as session:
-        outcome = await run_categorizer(session, transaction_id=transaction_id)
+        outcome = await run_categorizer(session, transaction_id=transaction_id, force=force)
         return {
             "transaction_id": str(outcome.transaction_id),
             "category_id": str(outcome.category_id) if outcome.category_id else None,
@@ -103,26 +105,3 @@ def sync_all_items() -> dict[str, int]:
 async def _active_item_ids() -> list[str]:
     async with session_scope() as session:
         return [str(item.id) for item in await repo.list_items(session, active_only=True)]
-
-
-@shared_task(name="books.recategorize_business")
-def recategorize_business(business_id: str, only_uncategorized: bool = True) -> dict[str, int]:
-    """Re-run the agent over a business — after editing the chart of accounts."""
-    transaction_ids = run_async(
-        _transactions_to_recategorize(uuid.UUID(business_id), only_uncategorized)
-    )
-    for transaction_id in transaction_ids:
-        categorize_transaction.delay(transaction_id)
-    return {"queued": len(transaction_ids)}
-
-
-async def _transactions_to_recategorize(
-    business_id: uuid.UUID, only_uncategorized: bool
-) -> list[str]:
-    async with session_scope() as session:
-        filters = repo.TransactionFilters(
-            business_id=business_id,
-            uncategorized=only_uncategorized or None,
-            limit=10_000,
-        )
-        return [str(t.id) for t in await repo.list_transactions(session, filters)]

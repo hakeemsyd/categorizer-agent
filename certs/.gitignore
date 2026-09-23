@@ -1,0 +1,5 @@
+# Your Teller mutual-TLS certificate and private key go here for local
+# development outside sandbox (docker-compose mounts this directory read-only
+# into the app containers as /certs). Never commit real certificates or keys.
+*
+!.gitignore

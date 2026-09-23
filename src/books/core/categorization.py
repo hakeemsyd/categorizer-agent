@@ -44,13 +44,28 @@ async def apply_category(
     rationale: str | None = None,
     mark_reviewed: bool = False,
     threshold: float | None = None,
+    force: bool = False,
 ) -> Transaction:
     """Set a transaction's category and record who did it and why.
 
     ``mark_reviewed`` is what separates a human confirmation from an agent
     write: only it touches ``last_reviewed_at`` and clears ``needs_review``
     unconditionally.
+
+    A write that is not itself a human review (``mark_reviewed=False``) is
+    refused outright if a human already reviewed this transaction — the
+    agent re-running (on one transaction or across a whole business) must
+    never silently replace a human's decision. Pass ``force=True`` to
+    override deliberately. Human-driven writes always pass
+    ``mark_reviewed=True`` and never hit this guard.
     """
+    if not mark_reviewed and not force and transaction.last_reviewed_at is not None:
+        raise ValidationError(
+            f"Transaction {transaction.id} was reviewed by a human on "
+            f"{transaction.last_reviewed_at:%Y-%m-%d} — refusing to overwrite it. "
+            "Pass force=True to override deliberately."
+        )
+
     if category_id is not None:
         category = await repo.get_category(session, category_id)
         if category.business_id != transaction.business_id:

@@ -27,6 +27,10 @@ def list_transactions(
     business: str = typer.Option(None, "--business", "-b"),
     needs_review: bool = typer.Option(False, "--needs-review", help="Only low-confidence rows."),
     uncategorized: bool = typer.Option(False, "--uncategorized"),
+    reviewed: bool = typer.Option(False, "--reviewed", help="Only rows a human has confirmed."),
+    not_reviewed: bool = typer.Option(
+        False, "--not-reviewed", help="Only rows nobody has reviewed yet."
+    ),
     search: str = typer.Option(None, "--search", "-s", help="Vendor/description substring."),
     start: str = typer.Option(None, "--from", help="YYYY-MM-DD"),
     end: str = typer.Option(None, "--to", help="YYYY-MM-DD"),
@@ -34,6 +38,9 @@ def list_transactions(
     offset: int = typer.Option(0, "--offset"),
 ) -> None:
     """List transactions."""
+    if reviewed and not_reviewed:
+        ui.fail("--reviewed and --not-reviewed are mutually exclusive")
+
     try:
         with ui.client() as api:
             business_id = _resolve.business_id(api, business)
@@ -41,6 +48,7 @@ def list_transactions(
                 business_id=business_id,
                 needs_review=True if needs_review else None,
                 uncategorized=True if uncategorized else None,
+                reviewed=True if reviewed else (False if not_reviewed else None),
                 search=search,
                 start_date=_date(start, "--from"),
                 end_date=_date(end, "--to"),
@@ -108,11 +116,19 @@ def show_transaction(transaction_id: str = typer.Argument(..., help="Transaction
 def categorize(
     transaction_id: str = typer.Argument(..., help="Transaction id."),
     queue: bool = typer.Option(False, "--queue", help="Hand to a worker instead of waiting."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite even if a human already reviewed this transaction.",
+    ),
 ) -> None:
-    """Run the categorization agent over one transaction."""
+    """Run the categorization agent over one transaction.
+
+    Refuses if a human already reviewed it — pass --force to override.
+    """
     try:
         with ui.client() as api:
-            result = api.categorize(transaction_id, wait=not queue)
+            result = api.categorize(transaction_id, wait=not queue, force=force)
     except BooksAPIError as exc:
         ui.handle(exc)
         return
@@ -129,6 +145,53 @@ def categorize(
     )
     if result.get("rationale"):
         ui.console.print(f"  [dim]{result['rationale']}[/]")
+
+
+@app.command("categorize-batch")
+def categorize_batch(
+    business: str = typer.Option(None, "--business", "-b"),
+    uncategorized: bool = typer.Option(False, "--uncategorized", help="Only uncategorized rows."),
+    needs_review: bool = typer.Option(
+        False, "--needs-review", help="Only rows currently flagged for review."
+    ),
+    category: str = typer.Option(
+        None, "--category", "-c", help="Only rows currently in this category."
+    ),
+    start: str = typer.Option(None, "--from", help="YYYY-MM-DD"),
+    end: str = typer.Option(None, "--to", help="YYYY-MM-DD"),
+    include_reviewed: bool = typer.Option(
+        False,
+        "--include-reviewed",
+        help="Also touch transactions a human already reviewed (normally skipped).",
+    ),
+) -> None:
+    """Queue the agent to run again over many transactions at once.
+
+    Useful after editing the chart of accounts, adding a rule, or tuning the
+    categorizer — pick a scope with the filters below (default: every
+    transaction in the business). Always queued, never inline: this can match
+    a lot of rows. Skips anything a human has already reviewed unless you
+    pass --include-reviewed.
+    """
+    try:
+        with ui.client() as api:
+            business_id = _resolve.business_id(api, business)
+            result = api.categorize_batch(
+                business_id,
+                category_name=category,
+                needs_review=True if needs_review else None,
+                uncategorized=True if uncategorized else None,
+                start_date=_date(start, "--from"),
+                end_date=_date(end, "--to"),
+                include_reviewed=include_reviewed,
+            )
+    except BooksAPIError as exc:
+        ui.handle(exc)
+        return
+
+    ui.ok(f"Queued {result['queued']} transaction(s) for categorization")
+    if not include_reviewed:
+        ui.console.print("  [dim]Already-reviewed transactions were skipped.[/]")
 
 
 @app.command("recategorize")

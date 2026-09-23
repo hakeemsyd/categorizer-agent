@@ -143,7 +143,7 @@ class Category(Base):
 
 
 class Item(Base):
-    """One provider connection (a Plaid Item)."""
+    """One provider connection (an enrollment/item, in the aggregator's own terms)."""
 
     __tablename__ = "items"
 
@@ -154,8 +154,11 @@ class Item(Base):
     business_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
-    # Per-item, not global: a future non-Plaid provider can be added alongside.
-    provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="plaid")
+    # Per-item, not global, so more than one aggregator can be in use at once.
+    # No server default on purpose: every insert path sets this explicitly
+    # (repo.create_item), and a stored default just goes stale the next time
+    # the active provider changes — which is exactly what happened here.
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
     provider_item_id: Mapped[str | None] = mapped_column(Text)
     access_token_encrypted: Mapped[str | None] = mapped_column(Text)
     cursor: Mapped[str | None] = mapped_column(Text)

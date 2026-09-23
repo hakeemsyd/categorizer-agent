@@ -44,6 +44,9 @@ worker: ## Run a Celery worker
 beat: ## Run Celery Beat (the hourly sync safety net)
 	$(VENV)/bin/celery -A books.workers.app.celery_app beat -l info
 
+flower: ## Web dashboard over the queue — http://localhost:5555 (debugging only)
+	$(VENV)/bin/celery -A books.workers.app.celery_app flower --port=5555 --address=127.0.0.1
+
 mcp: ## Run the MCP server over stdio
 	$(PY) -m books.faces.mcp.server
 

@@ -1,7 +1,7 @@
 """``books`` — the human face.
 
 Every command is a thin call into the core service over HTTP. Nothing here
-knows about Plaid, Postgres, or Celery.
+knows about Teller, Postgres, or Celery.
 """
 
 from __future__ import annotations

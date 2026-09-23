@@ -27,7 +27,13 @@ async def create_link_token(payload: LinkTokenRequest, session: SessionDep):
     token = sync_service.create_link_token(
         provider_name=provider_name, user_ref=str(business.tenant_id)
     )
-    return LinkTokenOut(link_token=token.token, expiration=token.expiration, provider=provider_name)
+    environment = get_settings().teller_environment if provider_name == "teller" else ""
+    return LinkTokenOut(
+        link_token=token.token,
+        expiration=token.expiration,
+        provider=provider_name,
+        environment=environment,
+    )
 
 
 @router.post("/link/exchange", response_model=ItemOut, status_code=status.HTTP_201_CREATED)

@@ -1,8 +1,8 @@
 """In-memory provider used by tests and local demos.
 
 Exists to prove the abstraction is real (plan.md §3.3): every route, Celery
-task, and the categorization agent are exercised against this, so any Plaid
-detail that leaks out of ``providers/plaid.py`` breaks a test.
+task, and the categorization agent are exercised against this, so any
+provider-specific detail that leaks out of a real adapter breaks a test.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Aggregator adapters.
 
-Nothing outside this package imports a vendor SDK. Swapping Plaid for another
-aggregator means adding one module here and registering it — routes, Celery
+Nothing outside this package imports a vendor SDK. Swapping one aggregator for
+another means adding one module here and registering it — routes, Celery
 tasks, schema, and the categorization agent are untouched (plan.md §3).
 """
 

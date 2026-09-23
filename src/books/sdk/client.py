@@ -219,9 +219,41 @@ class BooksClient:
     def transaction_history(self, transaction_id: uuid.UUID | str) -> list[dict]:
         return self._request("GET", f"/transactions/{transaction_id}/history")
 
-    def categorize(self, transaction_id: uuid.UUID | str, wait: bool = False) -> dict:
+    def categorize(
+        self, transaction_id: uuid.UUID | str, wait: bool = False, force: bool = False
+    ) -> dict:
         return self._request(
-            "POST", f"/transactions/{transaction_id}/categorize", json={"wait": wait}
+            "POST",
+            f"/transactions/{transaction_id}/categorize",
+            json={"wait": wait, "force": force},
+        )
+
+    def categorize_batch(
+        self,
+        business_id: uuid.UUID | str,
+        account_id: str | None = None,
+        category_id: str | None = None,
+        category_name: str | None = None,
+        needs_review: bool | None = None,
+        uncategorized: bool | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        include_reviewed: bool = False,
+    ) -> dict:
+        return self._request(
+            "POST",
+            "/transactions/categorize-batch",
+            json={
+                "business_id": str(business_id),
+                "account_id": account_id,
+                "category_id": category_id,
+                "category_name": category_name,
+                "needs_review": needs_review,
+                "uncategorized": uncategorized,
+                "start_date": start_date,
+                "end_date": end_date,
+                "include_reviewed": include_reviewed,
+            },
         )
 
     def recategorize(

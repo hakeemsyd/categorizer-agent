@@ -31,9 +31,9 @@ Three rules hold the shape:
 2. **One category write path.** `books.core.categorization.apply_category` is
    the only function that touches `transactions.category_id`, whoever called
    it, and it always appends to `categorization_history`.
-3. **One vendor import.** Only `src/books/providers/plaid.py` imports `plaid`.
-   Everything else talks to the `TransactionProvider` protocol, and the test
-   suite runs against `FakeProvider` to keep that honest.
+3. **One vendor import.** Only `src/books/providers/teller.py` talks to
+   Teller's API. Everything else talks to the `TransactionProvider` protocol,
+   and the test suite runs against `FakeProvider` to keep that honest.
 
 ---
 
@@ -87,7 +87,7 @@ books tx list --business "Coding Crafts"        # terminal 2
 ```
 
 `FakeProvider` supplies canned accounts and transactions, so you can exercise
-the CLI, the review loop and the MCP tools before Plaid access arrives.
+the CLI, the review loop and the MCP tools before Teller access arrives.
 
 ### The real setup
 
@@ -153,9 +153,12 @@ Deploy checklist:
   `BOOKS_ENCRYPTION_KEY` in particular: lose it and every stored access token
   becomes undecryptable, and every bank has to be re-linked. Back it up
   somewhere you would trust with a password manager's master key.
-- **`BOOKS_PLAID_WEBHOOK_URL` must be publicly reachable HTTPS** and point at
-  `/webhooks/plaid`. Plaid signs each delivery; the route verifies the
-  signature rather than your bearer token.
+- **Register `/webhooks/teller` (publicly reachable HTTPS) in the Teller
+  Dashboard.** Teller signs each delivery with `BOOKS_TELLER_SIGNING_SECRET`;
+  the route verifies that signature rather than your bearer token.
+- **Outside sandbox, mount a real certificate and key** and point
+  `BOOKS_TELLER_CERT_PATH` / `BOOKS_TELLER_KEY_PATH` at them — Teller
+  authenticates every API call with mutual TLS, not just an API key.
 - **The container runs as non-root** (uid 1001) and holds no state — the only
   writable path it needs is `/tmp`, for Beat's schedule file.
 
@@ -173,16 +176,20 @@ matter:
 | `BOOKS_REDIS_URL` | Celery broker and result backend. |
 | `BOOKS_API_TOKEN` | Shared bearer token every face presents to the core. |
 | `BOOKS_ENCRYPTION_KEY` | Fernet key encrypting provider access tokens at rest. |
-| `BOOKS_PLAID_CLIENT_ID` / `_SECRET` / `_ENV` | Plaid credentials. |
-| `BOOKS_PLAID_WEBHOOK_URL` | Public HTTPS URL Plaid posts to (ngrok in dev). |
+| `BOOKS_TELLER_APPLICATION_ID` | Public — Teller Connect embeds it client-side. |
+| `BOOKS_TELLER_ENVIRONMENT` | `sandbox` (default), `development`, or `production`. |
+| `BOOKS_TELLER_CERT_PATH` / `_KEY_PATH` | Mutual-TLS cert/key. Required outside sandbox. |
+| `BOOKS_TELLER_SIGNING_SECRET` | Verifies `Teller-Signature` on incoming webhooks. |
 | `BOOKS_ANTHROPIC_API_KEY` | Powers the categorization agent. |
 | `BOOKS_CATEGORIZER_MODEL` | Defaults to `claude-sonnet-5`. |
 | `BOOKS_CONFIDENCE_THRESHOLD` | Below this, a transaction is flagged for review. |
-| `BOOKS_DEFAULT_PROVIDER` | `plaid`, or `fake` for demos and tests. |
+| `BOOKS_DEFAULT_PROVIDER` | `teller`, or `fake` for demos and tests. |
 
-Two keys never leave the core service: `BOOKS_ENCRYPTION_KEY` and the Plaid
-secret. Provider access tokens are encrypted before they reach Postgres, and
-redacted from every log line.
+Two keys never leave the core service: `BOOKS_ENCRYPTION_KEY` and
+`BOOKS_TELLER_SIGNING_SECRET`. Provider access tokens are encrypted before
+they reach Postgres, and redacted from every log line — as is the mutual-TLS
+private key, which never gets logged at all since only its *path* is ever
+passed around as configuration.
 
 Running natively, settings are read from `.env` in the project root. Running
 under compose, the same `.env` is picked up for interpolation and passed
@@ -279,20 +286,48 @@ books rule list | add PATTERN -c CATEGORY | rm ID
 corrects, `r` also writes a standing rule for that vendor so the same
 correction never comes back, `s` skips, `q` quits.
 
-### Linking a bank
+### Connecting a bank
 
-`books link` asks the core for a link token, serves the provider's widget on
-`127.0.0.1:8420`, and posts the resulting public token straight back to the
-core. The access token is exchanged server-side and never touches your shell
-history or the CLI process.
+`books link` asks the core for a link token (Teller's public
+`application_id`), serves Teller Connect on `127.0.0.1:8420`, and posts
+whatever comes back to the core for exchange. Unlike some aggregators, Teller
+Connect's `onSuccess` hands the browser the real, finished access token
+directly — there's no separate exchange step — but the core still confirms
+it server-side (by fetching the enrollment's accounts) rather than trusting
+the browser's claims, and the token itself never touches your shell history.
+
+```bash
+books link -b "Coding Crafts"
+```
+
+**Sandbox** (the default, `BOOKS_TELLER_ENVIRONMENT=sandbox`) needs only
+`BOOKS_TELLER_APPLICATION_ID` — no certificate. Pick any institution and log
+in with username `username` / password `password`; other usernames simulate
+MFA challenges, account lockouts, and disconnections (see Teller's
+[sandbox guide](https://teller.io/docs/guides/sandbox)).
+
+**Development/production** additionally need `BOOKS_TELLER_CERT_PATH` /
+`BOOKS_TELLER_KEY_PATH` — Teller authenticates every API call with mutual
+TLS, not just an API key. `books link` still works the same way; only the
+server-side calls behind it now present the certificate.
+
+Register `https://<your-tunnel>/webhooks/teller` in the Teller Dashboard for
+the fast sync path (`ngrok http 8000` in dev, matching
+`BOOKS_TELLER_SIGNING_SECRET` for verification). Without it, Celery Beat's
+hourly pass still picks up new transactions — you just wait longer.
 
 ### Backfill and `--since`
 
-Plaid's `/transactions/sync` has no date range — it is purely cursor-based. So
-`--backfill --since 2025-01-01` walks the whole cursor feed and discards
-anything older at ingestion, storing the boundary on the item for reference.
-Ongoing syncs are never date-bounded: they take everything the provider
-reports.
+Teller has no delta-sync endpoint — transactions are paginated per account
+with `count`/`from_id`/date filters, and there is no signal for "what
+changed since I last looked." So `--backfill --since 2025-01-01` walks full
+history per account and discards anything older at ingestion, storing the
+boundary on the item for reference. Ongoing (non-backfill) syncs re-walk a
+trailing window on every incremental pass — see `TELLER_SYNC_OVERLAP_DAYS` in
+`providers/teller.py` — rather than trusting a single watermark, since a
+`pending` transaction can later post under a different id with no signal
+that it happened. Duplicates from the overlap are harmless: ingestion upserts
+by id and never touches a category a human has already set.
 
 ---
 
@@ -365,7 +400,7 @@ src/books/
 │   ├── ingest.py          RawTransaction -> rows, with the backfill boundary
 │   ├── sync.py            Provider-agnostic sync orchestration
 │   └── queue.py           Indirection over Celery (swappable in tests)
-├── providers/     TransactionProvider protocol, PlaidProvider, FakeProvider
+├── providers/     TransactionProvider protocol, TellerProvider, FakeProvider
 ├── agent/         LangGraph categorization subgraph
 ├── workers/       Celery app, tasks, beat schedule, shared event loop
 ├── sdk/           BooksClient — the REST client every non-API face uses
@@ -406,8 +441,9 @@ remote server name it explicitly with `BOOKS_TEST_DATABASE_URL`.
 If it is unreachable the database-backed tests **skip** with a message saying
 so. A skipped run is not a passing run — check the summary line.
 
-Tests never touch Plaid or Anthropic: the provider is faked and the classifier
-is injected.
+Tests never touch Teller or Anthropic: the provider is mocked at the HTTP
+transport level (`tests/unit/test_teller_provider.py`) and the classifier is
+injected.
 
 Schema changes:
 
@@ -422,7 +458,7 @@ make migrate
 1. Write `src/books/providers/<name>.py` implementing `TransactionProvider`.
 2. Register it in `providers/registry.py`.
 3. Nothing else changes — `items.provider` is per-row, so the new adapter works
-   alongside Plaid rather than replacing it.
+   alongside Teller rather than replacing it.
 
 `tests/unit/test_providers.py` checks every registered provider against the
 protocol's method signatures, so an adapter that drifts fails the suite.
@@ -437,11 +473,13 @@ endpoints to the API and the SDK rather than reaching into `books.core`.
 
 ## Operational notes
 
-- **Webhooks** authenticate by Plaid's signed JWT (verified against the body
-  hash), not by `BOOKS_API_TOKEN` — `/webhooks/{provider}` is deliberately
-  outside the bearer-token dependency.
+- **Webhooks** authenticate by Teller's `Teller-Signature` HMAC (verified
+  against the raw body), not by `BOOKS_API_TOKEN` — `/webhooks/{provider}` is
+  deliberately outside the bearer-token dependency.
 - **Celery Beat** re-syncs every active item hourly as a safety net for missed
-  webhooks. With an unchanged cursor that is a cheap no-op.
+  webhooks. Teller has no "nothing changed" signal the way a cursor does, so
+  each pass genuinely re-walks the trailing overlap window rather than being
+  a true no-op — cheap, but not free, at real scale.
 - **Workers use a threads pool** and one shared event loop per process
   (`workers/runner.py`); the work is IO-bound, and forking breaks on macOS.
 - **Re-syncs never clobber a human.** Transaction upserts only overwrite

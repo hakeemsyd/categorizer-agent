@@ -94,6 +94,18 @@ async def test_transaction_filters(api_client, linked_item):
     assert searched.json()["total"] == 1
     assert searched.json()["items"][0]["vendor"] == "Gusto"
 
+    not_reviewed = await api_client.get(
+        "/transactions",
+        params={"business_id": str(linked_item.business_id), "reviewed": False},
+    )
+    assert not_reviewed.json()["total"] == 5  # nothing has been reviewed yet
+
+    reviewed = await api_client.get(
+        "/transactions",
+        params={"business_id": str(linked_item.business_id), "reviewed": True},
+    )
+    assert reviewed.json()["total"] == 0
+
 
 async def test_recategorize_by_name_marks_reviewed_and_records_the_actor(
     api_client, session, business, chart_of_accounts, linked_item
@@ -131,6 +143,140 @@ async def test_recategorize_to_an_unknown_category_is_rejected(
     )
     assert response.status_code == 422
     assert "chart of accounts" in response.json()["detail"]
+
+
+async def test_categorize_refuses_an_already_reviewed_transaction_without_force(
+    api_client, business, chart_of_accounts, linked_item
+):
+    await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+    page = await api_client.get("/transactions", params={"business_id": str(business.id)})
+    transaction_id = next(t["id"] for t in page.json()["items"] if t["vendor"] == "AWS")
+    await api_client.post(
+        f"/transactions/{transaction_id}/recategorize",
+        json={"category_name": "Payroll", "actor": "cli:hakeem"},
+    )
+    # A standing rule so `categorize` short-circuits before the model —
+    # this test is about the review guard, not the classifier.
+    await api_client.post(
+        "/rules",
+        json={
+            "business_id": str(business.id),
+            "match_type": "vendor_equals",
+            "pattern": "AWS",
+            "category_name": "Software & Subscriptions",
+        },
+    )
+
+    refused = await api_client.post(
+        f"/transactions/{transaction_id}/categorize", json={"wait": True}
+    )
+    assert refused.status_code == 422
+    assert "reviewed by a human" in refused.json()["detail"]
+
+    forced = await api_client.post(
+        f"/transactions/{transaction_id}/categorize", json={"wait": True, "force": True}
+    )
+    assert forced.status_code == 200
+    assert forced.json()["category_name"] == "Software & Subscriptions"
+
+
+async def test_categorize_batch_skips_reviewed_rows_by_default(
+    api_client, business, chart_of_accounts, linked_item, dispatcher
+):
+    await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+    page = await api_client.get("/transactions", params={"business_id": str(business.id)})
+    transactions = page.json()["items"]
+    assert len(transactions) == 5
+
+    # Review one of them; it must be excluded from the default batch scope.
+    await api_client.post(
+        f"/transactions/{transactions[0]['id']}/recategorize",
+        json={"category_name": "Payroll", "actor": "cli:hakeem"},
+    )
+    dispatcher.calls.clear()
+
+    response = await api_client.post(
+        "/transactions/categorize-batch", json={"business_id": str(business.id)}
+    )
+    assert response.status_code == 200
+    assert response.json()["queued"] == 4
+
+    queued_ids = {
+        str(call[0]) for name, call in dispatcher.calls if name == "categorize_transaction"
+    }
+    assert transactions[0]["id"] not in queued_ids
+    # Skipped by the query, so force is never even needed for the default case.
+    assert all(force is False for _, (_, force) in dispatcher.calls)
+
+
+async def test_categorize_batch_include_reviewed_forces_every_matched_row(
+    api_client, business, chart_of_accounts, linked_item, dispatcher
+):
+    await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+    page = await api_client.get("/transactions", params={"business_id": str(business.id)})
+    transactions = page.json()["items"]
+
+    await api_client.post(
+        f"/transactions/{transactions[0]['id']}/recategorize",
+        json={"category_name": "Payroll", "actor": "cli:hakeem"},
+    )
+    dispatcher.calls.clear()
+
+    response = await api_client.post(
+        "/transactions/categorize-batch",
+        json={"business_id": str(business.id), "include_reviewed": True},
+    )
+    assert response.json()["queued"] == 5
+    assert all(force is True for _, (_, force) in dispatcher.calls)
+
+
+async def test_categorize_batch_filters_by_category_name(
+    api_client, business, chart_of_accounts, linked_item, dispatcher
+):
+    await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+    page = await api_client.get("/transactions", params={"business_id": str(business.id)})
+    transaction_id = next(t["id"] for t in page.json()["items"] if t["vendor"] == "AWS")
+    await api_client.post(
+        f"/transactions/{transaction_id}/recategorize",
+        json={"category_name": "Software & Subscriptions", "actor": "cli:hakeem"},
+    )
+    dispatcher.calls.clear()
+
+    response = await api_client.post(
+        "/transactions/categorize-batch",
+        json={
+            "business_id": str(business.id),
+            "category_name": "Software & Subscriptions",
+            "include_reviewed": True,
+        },
+    )
+    assert response.json()["queued"] == 1
+
+
+async def test_categorize_batch_rejects_an_unknown_category_name(
+    api_client, business, chart_of_accounts, linked_item
+):
+    response = await api_client.post(
+        "/transactions/categorize-batch",
+        json={"business_id": str(business.id), "category_name": "Nonexistent"},
+    )
+    assert response.status_code == 422
+
+
+async def test_categorize_batch_404s_for_an_unknown_business(api_client):
+    response = await api_client.post(
+        "/transactions/categorize-batch",
+        json={"business_id": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert response.status_code == 404
+
+
+async def test_categorize_batch_with_nothing_matching_queues_nothing(api_client, business):
+    response = await api_client.post(
+        "/transactions/categorize-batch", json={"business_id": str(business.id)}
+    )
+    assert response.status_code == 200
+    assert response.json()["queued"] == 0
 
 
 async def test_category_and_rule_lifecycle(api_client, business):

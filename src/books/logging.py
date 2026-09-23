@@ -24,7 +24,7 @@ REDACTED_KEYS = frozenset(
         "api_token",
         "encryption_key",
         "anthropic_api_key",
-        "plaid_secret",
+        "teller_signing_secret",
     }
 )
 

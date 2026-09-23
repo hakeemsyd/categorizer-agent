@@ -34,6 +34,12 @@ celery_app.conf.update(
     worker_concurrency=4,
     result_expires=60 * 60 * 24,
     task_default_queue="books",
+    # Emit task lifecycle events so Flower (`make flower`) can show live task
+    # state rather than just worker presence — set here, not via a `-E` flag
+    # on the worker command, so it applies no matter how the worker is
+    # started (make worker, Docker, wherever).
+    worker_send_task_events=True,
+    task_send_sent_event=True,
 )
 
 configure_logging()

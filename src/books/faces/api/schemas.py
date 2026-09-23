@@ -84,6 +84,10 @@ class LinkTokenOut(BaseModel):
     link_token: str
     expiration: str
     provider: str
+    #: Which environment the widget should point at (e.g. Teller's
+    #: sandbox/development/production). Empty for a provider with no such
+    #: concept.
+    environment: str = ""
 
 
 class LinkExchange(BaseModel):
@@ -194,6 +198,8 @@ class ConfirmRequest(BaseModel):
 
 class CategorizeRequest(BaseModel):
     wait: bool = False
+    #: Override the refusal to overwrite an already-reviewed transaction.
+    force: bool = False
 
 
 class CategorizeResponse(BaseModel):
@@ -206,6 +212,29 @@ class CategorizeResponse(BaseModel):
     needs_review: bool | None = None
     rationale: str | None = None
     source: str | None = None
+
+
+class CategorizeBatchRequest(BaseModel):
+    """Queue the agent to run again over transactions matching these filters.
+
+    Reuses the same filter shape as listing transactions. Already-reviewed
+    transactions are skipped unless ``include_reviewed`` is set — see
+    ``apply_category``'s ``force`` guard, which this maps onto.
+    """
+
+    business_id: uuid.UUID
+    account_id: uuid.UUID | None = None
+    category_id: uuid.UUID | None = None
+    category_name: str | None = None
+    needs_review: bool | None = None
+    uncategorized: bool | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    include_reviewed: bool = False
+
+
+class CategorizeBatchResponse(BaseModel):
+    queued: int
 
 
 class HistoryOut(ORMModel):

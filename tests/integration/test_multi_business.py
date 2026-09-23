@@ -29,9 +29,7 @@ async def two_businesses(session, business):
 
 async def _link_and_sync(session, business, token: str, state: FakeState):
     reset_fake_state(state)
-    item = await link_item(
-        session, business=business, provider_name="fake", public_token=token
-    )
+    item = await link_item(session, business=business, provider_name="fake", public_token=token)
     summary = await sync_item(session, item=item)
     await session.commit()
     return item, summary
@@ -97,7 +95,9 @@ async def test_the_same_category_name_can_exist_in_both(session, two_businesses)
         session, business=studio, name="Travel", account_type=AccountType.EXPENSE
     )
     assert a.id != b.id
-    assert [c.name for c in await repo.list_categories(session, business_id=crafts.id)] == ["Travel"]
+    assert [c.name for c in await repo.list_categories(session, business_id=crafts.id)] == [
+        "Travel"
+    ]
 
 
 async def test_a_category_cannot_be_applied_across_businesses(session, two_businesses):

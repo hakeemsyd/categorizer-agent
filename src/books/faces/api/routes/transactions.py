@@ -12,6 +12,8 @@ from books.core.errors import ValidationError
 from books.core.queue import get_dispatcher
 from books.faces.api.deps import AuthDep, SessionDep
 from books.faces.api.schemas import (
+    CategorizeBatchRequest,
+    CategorizeBatchResponse,
     CategorizeRequest,
     CategorizeResponse,
     ConfirmRequest,
@@ -32,6 +34,7 @@ async def list_transactions(
     category_id: uuid.UUID | None = None,
     needs_review: bool | None = None,
     uncategorized: bool | None = None,
+    reviewed: bool | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
     search: str | None = None,
@@ -44,6 +47,7 @@ async def list_transactions(
         category_id=category_id,
         needs_review=needs_review,
         uncategorized=uncategorized,
+        reviewed=reviewed,
         start_date=start_date,
         end_date=end_date,
         search=search,
@@ -73,13 +77,17 @@ async def transaction_history(transaction_id: uuid.UUID, session: SessionDep):
 
 @router.post("/transactions/{transaction_id}/categorize", response_model=CategorizeResponse)
 async def categorize(transaction_id: uuid.UUID, payload: CategorizeRequest, session: SessionDep):
-    """Ask the agent to categorize. Queued by default; ``wait`` runs inline."""
+    """Ask the agent to categorize. Queued by default; ``wait`` runs inline.
+
+    Refuses (422) if a human already reviewed this transaction, unless
+    ``force`` is set.
+    """
     transaction = await repo.get_transaction(session, transaction_id)
     if not payload.wait:
-        task_id = get_dispatcher().categorize_transaction(transaction.id)
+        task_id = get_dispatcher().categorize_transaction(transaction.id, force=payload.force)
         return CategorizeResponse(transaction_id=transaction.id, queued_task_id=task_id)
 
-    outcome = await run_categorizer(session, transaction_id=transaction.id)
+    outcome = await run_categorizer(session, transaction_id=transaction.id, force=payload.force)
     return CategorizeResponse(
         transaction_id=outcome.transaction_id,
         category_id=outcome.category_id,
@@ -90,6 +98,50 @@ async def categorize(transaction_id: uuid.UUID, payload: CategorizeRequest, sess
         rationale=outcome.rationale,
         source=outcome.source,
     )
+
+
+@router.post("/transactions/categorize-batch", response_model=CategorizeBatchResponse)
+async def categorize_batch(payload: CategorizeBatchRequest, session: SessionDep):
+    """Queue the agent to run again over transactions matching the filters.
+
+    Always async — this can match thousands of rows, and running the model
+    that many times inline in one request isn't reasonable. The query itself
+    runs here (fast, indexed), so the response reports an accurate count
+    immediately; the individual categorizations happen in the background.
+    """
+    business = await repo.get_business(session, payload.business_id)
+    category_id = payload.category_id
+    if category_id is None and payload.category_name:
+        category = await repo.find_category_by_name(
+            session, business_id=business.id, name=payload.category_name
+        )
+        if category is None:
+            raise ValidationError(
+                f"No category named {payload.category_name!r} in this business's chart of accounts"
+            )
+        category_id = category.id
+
+    filters = repo.TransactionFilters(
+        business_id=payload.business_id,
+        account_id=payload.account_id,
+        category_id=category_id,
+        needs_review=payload.needs_review,
+        uncategorized=payload.uncategorized,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        # Skip already-reviewed rows by default; apply_category's own guard
+        # is the durable backstop, but there's no reason to even queue a task
+        # that's just going to be refused.
+        reviewed=None if payload.include_reviewed else False,
+        limit=10_000,
+    )
+    transactions = await repo.list_transactions(session, filters)
+
+    dispatcher = get_dispatcher()
+    for transaction in transactions:
+        dispatcher.categorize_transaction(transaction.id, force=payload.include_reviewed)
+
+    return CategorizeBatchResponse(queued=len(transactions))
 
 
 @router.post("/transactions/{transaction_id}/recategorize", response_model=TransactionOut)

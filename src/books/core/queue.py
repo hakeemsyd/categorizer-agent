@@ -17,10 +17,8 @@ class Dispatcher(Protocol):
         self, item_id: uuid.UUID, *, backfill: bool, since: date | None
     ) -> str | None: ...
 
-    def categorize_transaction(self, transaction_id: uuid.UUID) -> str | None: ...
-
-    def recategorize_business(
-        self, business_id: uuid.UUID, *, only_uncategorized: bool
+    def categorize_transaction(
+        self, transaction_id: uuid.UUID, *, force: bool = False
     ) -> str | None: ...
 
 
@@ -33,17 +31,12 @@ class CeleryDispatcher:
         result = sync_item.delay(str(item_id), backfill, since.isoformat() if since else None)
         return result.id
 
-    def categorize_transaction(self, transaction_id: uuid.UUID) -> str | None:
+    def categorize_transaction(
+        self, transaction_id: uuid.UUID, *, force: bool = False
+    ) -> str | None:
         from books.workers.tasks import categorize_transaction
 
-        return categorize_transaction.delay(str(transaction_id)).id
-
-    def recategorize_business(
-        self, business_id: uuid.UUID, *, only_uncategorized: bool
-    ) -> str | None:
-        from books.workers.tasks import recategorize_business
-
-        return recategorize_business.delay(str(business_id), only_uncategorized).id
+        return categorize_transaction.delay(str(transaction_id), force).id
 
 
 class RecordingDispatcher:
@@ -56,14 +49,10 @@ class RecordingDispatcher:
         self.calls.append(("sync_item", (item_id, backfill, since)))
         return None
 
-    def categorize_transaction(self, transaction_id: uuid.UUID) -> str | None:
-        self.calls.append(("categorize_transaction", transaction_id))
-        return None
-
-    def recategorize_business(
-        self, business_id: uuid.UUID, *, only_uncategorized: bool
+    def categorize_transaction(
+        self, transaction_id: uuid.UUID, *, force: bool = False
     ) -> str | None:
-        self.calls.append(("recategorize_business", (business_id, only_uncategorized)))
+        self.calls.append(("categorize_transaction", (transaction_id, force)))
         return None
 
 

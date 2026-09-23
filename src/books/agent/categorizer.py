@@ -61,6 +61,7 @@ class CategorizationOutcome:
 class _State(TypedDict, total=False):
     session: AsyncSession
     classifier: Classifier
+    force: bool
     transaction: Transaction
     business: Business
     account: Account
@@ -176,6 +177,7 @@ async def _persist(state: _State) -> dict[str, Any]:
         confidence=state.get("confidence", 0.0),
         rationale=state.get("rationale"),
         mark_reviewed=False,  # the agent never marks a transaction human-reviewed
+        force=state.get("force", False),
     )
     return {}
 
@@ -221,10 +223,13 @@ async def categorize_transaction(
     *,
     transaction_id: uuid.UUID,
     classifier: Classifier | None = None,
+    force: bool = False,
 ) -> CategorizationOutcome:
     """Categorize one transaction and write the result.
 
     Pass ``classifier`` to substitute the model (tests, replays, evals).
+    Raises :class:`ValidationError` if a human already reviewed this
+    transaction, unless ``force=True`` — see ``apply_category``.
     """
     transaction = await repo.get_transaction(session, transaction_id)
     state: dict[str, Any] = {
@@ -233,6 +238,7 @@ async def categorize_transaction(
         # Lazy: a standing rule short-circuits before the model is ever built,
         # so a business running purely on rules needs no Anthropic key.
         "classifier": classifier or _lazy_anthropic_classifier,
+        "force": force,
         "confidence": 0.0,
         "rationale": "",
         "source": "",
@@ -268,6 +274,13 @@ def anthropic_classifier() -> Classifier:
 
     from langchain_anthropic import ChatAnthropic
 
+    # Only set for an organization-level key, which Anthropic otherwise
+    # rejects with "not scoped to a workspace" — see BOOKS_ANTHROPIC_WORKSPACE_ID.
+    headers = (
+        {"anthropic-workspace-id": settings.anthropic_workspace_id}
+        if settings.anthropic_workspace_id
+        else None
+    )
     chat = ChatAnthropic(
         model_name=settings.categorizer_model,
         api_key=SecretStr(settings.anthropic_api_key),
@@ -275,6 +288,7 @@ def anthropic_classifier() -> Classifier:
         max_tokens_to_sample=1024,
         timeout=60,
         stop=None,
+        default_headers=headers,
     )
     model = chat.with_structured_output(Classification)
 

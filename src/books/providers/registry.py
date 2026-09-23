@@ -33,9 +33,9 @@ def available_providers() -> list[str]:
 
 def _register_builtin() -> None:
     from books.providers.fake import FakeProvider
-    from books.providers.plaid import PlaidProvider
+    from books.providers.teller import TellerProvider
 
-    register_provider("plaid", PlaidProvider)
+    register_provider("teller", TellerProvider)
     register_provider("fake", FakeProvider)
 
 

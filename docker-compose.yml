@@ -30,14 +30,22 @@ x-app: &app
     # than required so `docker compose up -d` (infra only) works on a clean
     # checkout; the app reports a clear error if it needs one and it is missing.
     BOOKS_ENCRYPTION_KEY: ${BOOKS_ENCRYPTION_KEY:-}
-    BOOKS_DEFAULT_PROVIDER: ${BOOKS_DEFAULT_PROVIDER:-plaid}
-    BOOKS_PLAID_ENV: ${BOOKS_PLAID_ENV:-sandbox}
-    BOOKS_PLAID_CLIENT_ID: ${BOOKS_PLAID_CLIENT_ID:-}
-    BOOKS_PLAID_SECRET: ${BOOKS_PLAID_SECRET:-}
-    BOOKS_PLAID_WEBHOOK_URL: ${BOOKS_PLAID_WEBHOOK_URL:-}
+    BOOKS_DEFAULT_PROVIDER: ${BOOKS_DEFAULT_PROVIDER:-teller}
+    BOOKS_TELLER_APPLICATION_ID: ${BOOKS_TELLER_APPLICATION_ID:-}
+    BOOKS_TELLER_ENVIRONMENT: ${BOOKS_TELLER_ENVIRONMENT:-sandbox}
+    # sandbox needs neither of these. Outside sandbox, point them at files
+    # mounted below (./certs on the host -> /certs in the container).
+    BOOKS_TELLER_CERT_PATH: ${BOOKS_TELLER_CERT_PATH:-}
+    BOOKS_TELLER_KEY_PATH: ${BOOKS_TELLER_KEY_PATH:-}
+    BOOKS_TELLER_SIGNING_SECRET: ${BOOKS_TELLER_SIGNING_SECRET:-}
     BOOKS_ANTHROPIC_API_KEY: ${BOOKS_ANTHROPIC_API_KEY:-}
     BOOKS_CATEGORIZER_MODEL: ${BOOKS_CATEGORIZER_MODEL:-claude-sonnet-5}
     BOOKS_CONFIDENCE_THRESHOLD: ${BOOKS_CONFIDENCE_THRESHOLD:-0.80}
+  # Only relevant outside sandbox, where Teller requires mutual TLS: put your
+  # certificate and key in ./certs (gitignored) and point BOOKS_TELLER_CERT_PATH
+  # / _KEY_PATH at /certs/<file> in .env. Harmless if the directory is empty.
+  volumes:
+    - ./certs:/certs:ro
   restart: unless-stopped
 
 services:

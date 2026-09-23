@@ -42,15 +42,28 @@ class Settings(BaseSettings):
     encryption_key: str | None = None
 
     # --- Providers ---
-    default_provider: str = "plaid"
-    plaid_env: Literal["sandbox", "production"] = "sandbox"
-    plaid_client_id: str | None = None
-    plaid_secret: str | None = None
-    plaid_webhook_url: str | None = None
-    plaid_redirect_uri: str | None = None
+    default_provider: str = "teller"
+
+    # Teller (https://teller.io/docs). application_id is public — it's the
+    # value Teller Connect embeds client-side, not a secret. The certificate
+    # is what actually authenticates API calls (mutual TLS) and is required
+    # outside sandbox; sandbox accepts requests with no certificate at all.
+    teller_application_id: str | None = None
+    teller_environment: Literal["sandbox", "development", "production"] = "sandbox"
+    teller_base_url: str = "https://api.teller.io"
+    teller_cert_path: str | None = None
+    teller_key_path: str | None = None
+    # HMAC secret from the Teller Dashboard, for verifying webhook signatures.
+    teller_signing_secret: str | None = None
 
     # --- Categorization agent ---
     anthropic_api_key: str | None = None
+    # Only needed if anthropic_api_key is an organization-level key rather
+    # than one scoped to a workspace — Anthropic then requires the caller to
+    # say which workspace to use on every request. A workspace-scoped key
+    # needs none of this; find one under console.anthropic.com's workspace
+    # settings, or the workspace's own "ID" field to fill this in instead.
+    anthropic_workspace_id: str | None = None
     categorizer_model: str = "claude-sonnet-5"
     categorizer_actor: str = "agent:categorizer-v1"
     confidence_threshold: float = Field(default=0.80, ge=0.0, le=1.0)

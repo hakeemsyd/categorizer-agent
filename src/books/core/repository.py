@@ -309,6 +309,9 @@ class TransactionFilters:
     category_id: uuid.UUID | None = None
     needs_review: bool | None = None
     uncategorized: bool | None = None
+    #: True: only transactions a human has reviewed. False: only ones nobody
+    #: has. None (default): no filtering by review status at all.
+    reviewed: bool | None = None
     start_date: date | None = None
     end_date: date | None = None
     search: str | None = None
@@ -325,6 +328,12 @@ def _apply_filters(stmt: Select, filters: TransactionFilters) -> Select:
         stmt = stmt.where(Transaction.category_id == filters.category_id)
     if filters.needs_review is not None:
         stmt = stmt.where(Transaction.needs_review.is_(filters.needs_review))
+    if filters.reviewed is not None:
+        stmt = stmt.where(
+            Transaction.last_reviewed_at.is_not(None)
+            if filters.reviewed
+            else Transaction.last_reviewed_at.is_(None)
+        )
     if filters.uncategorized:
         stmt = stmt.where(Transaction.category_id.is_(None))
     if filters.start_date:

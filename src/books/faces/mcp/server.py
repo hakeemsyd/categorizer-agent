@@ -83,18 +83,25 @@ def list_transactions(
     business_id: str,
     needs_review: bool | None = None,
     uncategorized: bool | None = None,
+    reviewed: bool | None = None,
     search: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> Any:
-    """Search transactions. Dates are YYYY-MM-DD; amounts are negative for money out."""
+    """Search transactions. Dates are YYYY-MM-DD; amounts are negative for money out.
+
+    reviewed=True/False filters by whether a human has confirmed the row
+    (last_reviewed_at), independent of needs_review (the agent's own
+    confidence signal) — omit it to ignore review status entirely.
+    """
     return _call(
         "list_transactions",
         business_id=business_id,
         needs_review=needs_review,
         uncategorized=uncategorized,
+        reviewed=reviewed,
         search=search,
         start_date=start_date,
         end_date=end_date,
@@ -116,9 +123,44 @@ def transaction_history(transaction_id: str) -> Any:
 
 
 @mcp.tool()
-def categorize_transaction(transaction_id: str, wait: bool = True) -> Any:
-    """Run the categorization agent over a transaction. Does not mark it reviewed."""
-    return _call("categorize", transaction_id=transaction_id, wait=wait)
+def categorize_transaction(transaction_id: str, wait: bool = True, force: bool = False) -> Any:
+    """Run the categorization agent over a transaction. Does not mark it reviewed.
+
+    Refuses if a human already reviewed this transaction, unless force=True.
+    """
+    return _call("categorize", transaction_id=transaction_id, wait=wait, force=force)
+
+
+@mcp.tool()
+def categorize_batch(
+    business_id: str,
+    category_id: str | None = None,
+    category_name: str | None = None,
+    needs_review: bool | None = None,
+    uncategorized: bool | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    include_reviewed: bool = False,
+) -> Any:
+    """Queue the agent to run again over many transactions at once.
+
+    Useful after editing the chart of accounts, adding a rule, or tuning the
+    categorizer. Filter the scope with the same fields as list_transactions;
+    omitting all of them targets every transaction in the business. Always
+    queued, never inline. Skips transactions a human already reviewed unless
+    include_reviewed=True.
+    """
+    return _call(
+        "categorize_batch",
+        business_id=business_id,
+        category_id=category_id,
+        category_name=category_name,
+        needs_review=needs_review,
+        uncategorized=uncategorized,
+        start_date=start_date,
+        end_date=end_date,
+        include_reviewed=include_reviewed,
+    )
 
 
 @mcp.tool()

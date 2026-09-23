@@ -1,7 +1,7 @@
 """Provider-agnostic sync orchestration (plan.md §5).
 
 Pulls pages until the provider says it is done, ingests each page, and advances
-the stored cursor. Nothing here knows what Plaid is.
+the stored cursor. Nothing here is provider-specific.
 """
 
 from __future__ import annotations

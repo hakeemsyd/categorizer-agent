@@ -18,8 +18,6 @@ dependencies = [
     "rich>=13.9",
     "cryptography>=43.0",
     "structlog>=24.4",
-    "plaid-python>=27.0",
-    "pyjwt[crypto]>=2.9",
     "langgraph>=0.2.50",
     "langchain-core>=0.3.20",
     "langchain-anthropic>=0.3.0",
@@ -33,6 +31,7 @@ dev = [
     "pytest-cov>=6.0",
     "ruff>=0.8",
     "mypy>=1.13",
+    "flower>=2.0",  # web dashboard over the Celery queue — `make flower`
 ]
 
 [project.scripts]
@@ -65,7 +64,6 @@ asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 markers = [
     "db: requires a live Postgres (set BOOKS_TEST_DATABASE_URL)",
-    "plaid: hits the real Plaid sandbox",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
 
