@@ -64,6 +64,19 @@ _PAGE = """<!doctype html>
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({error: "cancelled"})
       });
+    },
+    // Teller reports its own failures here — bad credentials, an institution
+    // that will not answer, an application/environment mismatch. Without this
+    // the browser shows a red banner and the terminal shows nothing at all,
+    // waiting out its full timeout with the one useful fact stuck on screen.
+    onFailure: async (failure) => {
+      document.getElementById("status").textContent =
+        "Could not link — see the terminal. You can close this tab.";
+      await fetch("/callback", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({error: "teller-connect-failure", failure: failure || {}})
+      });
     }
   });
   connect.open();
@@ -105,6 +118,27 @@ def _serve(application_id: str, environment: str, results: Queue) -> HTTPServer:
     return server
 
 
+def _why(payload: dict) -> str:
+    """Turn a Connect callback into something worth reading in a terminal."""
+    if payload.get("error") == "cancelled":
+        return "Cancelled in the browser."
+
+    failure = payload.get("failure") or {}
+    parts = [str(failure[k]) for k in ("type", "code", "message") if failure.get(k)]
+    if parts:
+        detail = " / ".join(parts)
+        # The sandbox rejects any password but "password", and the username
+        # chooses the scenario — worth saying, because Teller's own wording
+        # for it is a generic "unable to process your request".
+        hint = (
+            "\n  In sandbox the password must be exactly 'password'; the username "
+            "selects the scenario ('username' enrolls immediately, 'otp' and "
+            "'challenge' exercise MFA)."
+        )
+        return f"Teller Connect failed: {detail}{hint}"
+    return f"Link did not complete: {payload.get('error') or 'no access token'}"
+
+
 def link(
     business: str = typer.Option(
         None, "--business", "-b", help="Business to attach the accounts to."
@@ -142,7 +176,7 @@ def link(
                 return
 
             if payload.get("error") or not payload.get("public_token"):
-                ui.fail(f"Link did not complete: {payload.get('error', 'no access token')}")
+                ui.fail(_why(payload))
                 return
 
             item = api.exchange_public_token(
