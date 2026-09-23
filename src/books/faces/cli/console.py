@@ -39,11 +39,20 @@ def handle(exc: BooksAPIError) -> None:
     fail(f"{exc.error or 'Error'} ({exc.status_code}): {exc.detail}")
 
 
-def money(value: Any) -> str:
+def money(value: Any, side: str | None = None) -> str:
+    """Red for money out, green for money in.
+
+    Pass ``side`` for a transaction: the sign alone gets credit cards backwards,
+    because a card purchase is positive. Without it the sign is all there is,
+    which is right for a balance.
+    """
     if value is None:
         return ""
     amount = Decimal(str(value))
-    colour = "red" if amount < 0 else "green"
+    if side is not None:
+        colour = "red" if side == "debit" else "green"
+    else:
+        colour = "red" if amount < 0 else "green"
     return f"[{colour}]{amount:,.2f}[/]"
 
 
@@ -77,7 +86,7 @@ def transactions_table(rows: list[dict], categories: dict[str, str] | None = Non
         table.add_row(
             short(row["id"]),
             str(row["date"]),
-            money(row["amount"]),
+            money(row["amount"], row.get("entry_side")),
             entry_side(row.get("entry_side")),
             (row.get("vendor") or row.get("description") or "")[:34],
             categories.get(str(row.get("category_id")), "") or "[dim]—[/]",

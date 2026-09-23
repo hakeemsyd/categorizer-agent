@@ -121,7 +121,7 @@ async def test_recategorize_by_name_marks_reviewed_and_records_the_actor(
         json={"category_name": "Software & Subscriptions", "actor": "cli:hakeem", "note": "infra"},
     )
     assert response.status_code == 200
-    body = response.json()
+    body = response.json()["transaction"]
     assert body["needs_review"] is False
     assert body["last_reviewed_at"] is not None
 
@@ -364,3 +364,45 @@ async def test_duplicate_category_names_are_rejected(api_client, business):
         json={"name": "travel", "account_type": "expense"},
     )
     assert duplicate.status_code >= 400
+
+
+async def test_chart_bootstrap_applies_exactly_the_approved_proposal(api_client, business):
+    """Approval is for a specific list, so the route creates that list.
+
+    The model is not consulted on this path at all — which is also why this
+    test can exercise the real endpoint.
+    """
+    response = await api_client.post(
+        f"/businesses/{business.id}/categories/bootstrap",
+        json={
+            "apply": True,
+            "proposed": [
+                {
+                    "name": "Cloud Hosting",
+                    "account_type": "expense",
+                    "description": "Servers and managed infrastructure",
+                    "covers": ["AWS"],
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert [c["name"] for c in body["created"]] == ["Cloud Hosting"]
+    assert body["applied"] is True
+
+    listing = await api_client.get(f"/businesses/{business.id}/categories")
+    assert [c["name"] for c in listing.json()] == ["Cloud Hosting"]
+
+
+async def test_chart_bootstrap_will_not_take_a_proposal_it_is_not_allowed_to_apply(
+    api_client, business
+):
+    response = await api_client.post(
+        f"/businesses/{business.id}/categories/bootstrap",
+        json={
+            "apply": False,
+            "proposed": [{"name": "X", "account_type": "expense", "description": "x"}],
+        },
+    )
+    assert response.status_code == 422

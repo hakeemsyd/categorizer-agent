@@ -140,6 +140,27 @@ class BooksClient:
     def seed_chart_of_accounts(self, business_id: uuid.UUID | str) -> dict:
         return self._request("POST", f"/businesses/{business_id}/categories/seed")
 
+    def bootstrap_chart_of_accounts(
+        self,
+        business_id: uuid.UUID | str,
+        *,
+        apply: bool = False,
+        proposed: list[dict] | None = None,
+        max_merchants: int = 120,
+    ) -> dict:
+        """Propose (and optionally create) a chart built from synced merchants.
+
+        Pass ``proposed`` — the list from an earlier proposing call — alongside
+        ``apply`` to create exactly those accounts without asking the model again.
+        """
+        return self._request(
+            "POST",
+            f"/businesses/{business_id}/categories/bootstrap",
+            json={"apply": apply, "proposed": proposed, "max_merchants": max_merchants},
+            # One model call over the whole merchant list, but a long one.
+            timeout=None,
+        )
+
     def archive_category(self, category_id: uuid.UUID | str) -> dict:
         return self._request("DELETE", f"/categories/{category_id}")
 
@@ -263,6 +284,7 @@ class BooksClient:
         category_id: str | None = None,
         category_name: str | None = None,
         note: str | None = None,
+        propagate: bool = True,
     ) -> dict:
         return self._request(
             "POST",
@@ -272,7 +294,17 @@ class BooksClient:
                 "category_id": category_id,
                 "category_name": category_name,
                 "note": note,
+                "propagate": propagate,
             },
+        )
+
+    def bootstrap(self, business_id: uuid.UUID | str, max_vendors: int | None = None) -> dict:
+        return self._request(
+            "POST",
+            "/transactions/bootstrap",
+            json={"business_id": str(business_id), "max_vendors": max_vendors},
+            # One model call per merchant; a first import can take a while.
+            timeout=None,
         )
 
     def confirm(self, transaction_id: uuid.UUID | str, actor: str, note: str | None = None) -> dict:

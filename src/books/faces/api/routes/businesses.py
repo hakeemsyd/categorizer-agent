@@ -4,14 +4,19 @@ import uuid
 
 from fastapi import APIRouter, status
 
+from books.agent.chart_builder import ProposedCategory, apply_proposal, build_chart
 from books.core import repository as repo
 from books.core.accounting import AccountType
+from books.core.errors import ValidationError
 from books.faces.api.deps import AuthDep, SessionDep
 from books.faces.api.schemas import (
+    BuildChartRequest,
+    BuildChartResponse,
     BusinessCreate,
     BusinessOut,
     CategoryCreate,
     CategoryOut,
+    ProposedCategoryOut,
     SeedChartResponse,
     TenantCreate,
     TenantOut,
@@ -102,6 +107,47 @@ async def seed_categories(business_id: uuid.UUID, session: SessionDep):
     created, skipped = await repo.seed_chart_of_accounts(session, business=business)
     return SeedChartResponse(
         created=[CategoryOut.model_validate(c) for c in created], skipped=skipped
+    )
+
+
+@router.post(
+    "/businesses/{business_id}/categories/bootstrap",
+    response_model=BuildChartResponse,
+    tags=["categories"],
+)
+async def bootstrap_categories(
+    business_id: uuid.UUID, payload: BuildChartRequest, session: SessionDep
+):
+    """Propose a chart of accounts from the merchants already synced.
+
+    Step one of a cold start: the categorizer can only pick from accounts that
+    exist, so the buckets have to be right before anything is sorted into them.
+    Defaults to proposing only. To create them, call again with ``apply`` and
+    the ``proposed`` list you were given: approval should create what the human
+    actually read, not whatever a second model call happens to say.
+    """
+    if payload.proposed is not None:
+        if not payload.apply:
+            raise ValidationError("Sending `proposed` only makes sense with `apply` set.")
+        business = await repo.get_business(session, business_id)
+        result = await apply_proposal(
+            session,
+            business=business,
+            proposed=[ProposedCategory(**p.model_dump()) for p in payload.proposed],
+        )
+    else:
+        result = await build_chart(
+            session,
+            business_id=business_id,
+            apply=payload.apply,
+            max_merchants=payload.max_merchants,
+        )
+    return BuildChartResponse(
+        merchants_seen=result.merchants_seen,
+        proposed=[ProposedCategoryOut(**p.model_dump()) for p in result.proposed],
+        created=[CategoryOut.model_validate(c) for c in result.created],
+        skipped=result.skipped_existing,
+        applied=payload.apply,
     )
 
 

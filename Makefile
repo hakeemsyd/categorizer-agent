@@ -50,6 +50,11 @@ flower: ## Web dashboard over the queue — http://localhost:5555 (debugging onl
 mcp: ## Run the MCP server over stdio
 	$(PY) -m books.faces.mcp.server
 
+reset-db: ## DESTROY the dev database and rebuild it from migrations
+	$(PY) scripts/reset_db.py --yes
+	$(VENV)/bin/alembic upgrade head
+	@echo "Schema rebuilt. Re-link your bank: books link -b BUSINESS"
+
 test-db: ## Create the test database beside the configured dev database
 	$(PY) scripts/create_test_db.py
 
@@ -65,4 +70,4 @@ fmt: ## Auto-format and fix lint
 	$(VENV)/bin/ruff format src tests
 	$(VENV)/bin/ruff check --fix src tests
 
-.PHONY: help install up down build stack stack-logs stack-down migrate revision api worker beat mcp test-db test lint fmt
+.PHONY: help install up down build stack stack-logs stack-down migrate revision api worker beat mcp reset-db test-db test lint fmt

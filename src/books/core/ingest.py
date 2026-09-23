@@ -103,6 +103,5 @@ def _to_values(item: Item, account: Account, raw: RawTransaction) -> dict:
         "description": raw.description,
         "pending": raw.pending,
         "provider_category": raw.provider_category,
-        "transaction_type": "debit" if raw.amount < 0 else "credit",
         "raw_payload": raw.raw_payload,
     }

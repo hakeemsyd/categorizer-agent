@@ -85,6 +85,13 @@ async def engine():
     try:
         async with engine.begin() as connection:
             await connection.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+            # Rebuild from the models every run. create_all alone only creates
+            # missing *tables*, so a column added since the last run would be
+            # silently absent and every test would fail on a confusing
+            # "column does not exist" deep inside an unrelated assertion.
+            await connection.run_sync(Base.metadata.drop_all)
+            await connection.execute(text("DROP TYPE IF EXISTS account_type CASCADE"))
+            await connection.execute(text("DROP TYPE IF EXISTS entry_side CASCADE"))
             await connection.run_sync(Base.metadata.create_all)
     except Exception as exc:  # no database available
         await engine.dispose()
@@ -144,6 +151,9 @@ async def chart_of_accounts(session, business) -> dict[str, object]:
         ("Software & Subscriptions", AccountType.EXPENSE, "SaaS tools and cloud infrastructure"),
         ("Payroll", AccountType.EXPENSE, "Wages and contractor payments"),
         ("Travel", AccountType.EXPENSE, "Flights, hotels, ground transport"),
+        # Distinct from Credit Card Payable on purpose: one card issuer bills
+        # both, and only the description tells them apart.
+        ("Interest Expense", AccountType.EXPENSE, "Interest on cards and loans"),
         ("Consulting Revenue", AccountType.REVENUE, "Client payments for services"),
         ("Transfers Between Accounts", AccountType.ASSET, "Movement between own accounts"),
         ("Credit Card Payable", AccountType.LIABILITY, "Company card balance"),

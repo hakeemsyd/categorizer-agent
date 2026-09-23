@@ -79,6 +79,30 @@ def seed_chart_of_accounts(business_id: str) -> Any:
 
 
 @mcp.tool()
+def bootstrap_chart_of_accounts(
+    business_id: str,
+    apply: bool = False,
+    proposed: list[dict] | None = None,
+    max_merchants: int = 120,
+) -> Any:
+    """Propose a chart of accounts from the merchants in a business's transactions.
+
+    Step one of a cold start, before any categorization: the categorizer can
+    only choose accounts that exist. Defaults to proposing only — show the
+    proposal to the human, then call again with apply=True and the same
+    `proposed` list to create exactly what they agreed to. Existing accounts
+    are never renamed or removed.
+    """
+    return _call(
+        "bootstrap_chart_of_accounts",
+        business_id=business_id,
+        apply=apply,
+        proposed=proposed,
+        max_merchants=max_merchants,
+    )
+
+
+@mcp.tool()
 def list_transactions(
     business_id: str,
     needs_review: bool | None = None,
@@ -165,12 +189,20 @@ def categorize_batch(
 
 @mcp.tool()
 def recategorize_transaction(
-    transaction_id: str, category_name: str, actor: str, note: str | None = None
+    transaction_id: str,
+    category_name: str,
+    actor: str,
+    note: str | None = None,
+    propagate: bool = True,
 ) -> Any:
     """Set a category on a human's behalf and mark the transaction reviewed.
 
     ``actor`` must identify the human who decided (e.g. "cli:hakeem"), not the
     agent making the call.
+
+    With propagate (the default) the same decision is also applied to that
+    merchant's other transactions that nobody has reviewed, and the response
+    reports how many. Pass propagate=False to change only this row.
     """
     return _call(
         "recategorize",
@@ -178,7 +210,19 @@ def recategorize_transaction(
         category_name=category_name,
         actor=actor,
         note=note,
+        propagate=propagate,
     )
+
+
+@mcp.tool()
+def bootstrap_categorization(business_id: str, max_vendors: int | None = None) -> Any:
+    """First-pass categorization of a business with no history yet.
+
+    Groups every uncategorized transaction by merchant and makes one decision
+    per merchant, which is both cheaper and more consistent than going row by
+    row. Nothing is marked reviewed. Use max_vendors for a trial run.
+    """
+    return _call("bootstrap", business_id=business_id, max_vendors=max_vendors)
 
 
 @mcp.tool()

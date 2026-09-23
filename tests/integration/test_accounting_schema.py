@@ -7,19 +7,19 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from books.core import repository as repo
-from books.core.accounting import AccountType, EntrySide
+from books.core.accounting import AccountType, EntrySide, entry_side_for_amount
 from books.core.chart_of_accounts import DEFAULT_CHART
 from books.core.errors import ValidationError
 from books.core.sync import sync_item
+from books.providers.base import RawAccount
 
 pytestmark = pytest.mark.db
 
 
-async def _tx(session, business, amount: str, vendor: str = "V"):
-    account = (await repo.list_accounts(session, business_id=business.id))[0]
+async def _tx(session, business, amount: str, vendor: str = "V", account=None):
+    account = account or (await repo.list_accounts(session, business_id=business.id))[0]
     transaction_id, _ = await repo.upsert_transaction(
         session,
         values={
@@ -36,7 +36,7 @@ async def _tx(session, business, amount: str, vendor: str = "V"):
     return await repo.get_transaction(session, transaction_id)
 
 
-# --- the generated entry_side -------------------------------------------
+# --- entry_side, derived by the database ---------------------------------
 
 
 @pytest.mark.parametrize(
@@ -51,18 +51,25 @@ async def test_entry_side_is_generated_from_the_amount(
 
 
 async def test_entry_side_cannot_be_written_by_hand(session, business, linked_item):
-    """It is a generated column, so no code path can put it out of sync."""
+    """A trigger owns the column, so no statement can put it out of sync.
+
+    Raw SQL that names a side is not rejected — it is overruled, which is the
+    stronger outcome: a writer that gets it wrong cannot leave wrong data.
+    """
     account = (await repo.list_accounts(session, business_id=business.id))[0]
-    with pytest.raises((DBAPIError, IntegrityError)):
-        await session.execute(
-            text(
-                "INSERT INTO transactions "
-                "(tenant_id, business_id, account_id, provider_transaction_id, "
-                " amount, date, entry_side) "
-                "VALUES (:t, :b, :a, 'forced', -5, '2026-01-01', 'credit')"
-            ),
-            {"t": business.tenant_id, "b": business.id, "a": account.id},
-        )
+    await session.execute(
+        text(
+            "INSERT INTO transactions "
+            "(tenant_id, business_id, account_id, provider_transaction_id, "
+            " amount, date, entry_side) "
+            "VALUES (:t, :b, :a, 'forced', -5, '2026-01-01', 'credit')"
+        ),
+        {"t": business.tenant_id, "b": business.id, "a": account.id},
+    )
+    side = await session.scalar(
+        text("SELECT entry_side FROM transactions WHERE provider_transaction_id = 'forced'")
+    )
+    assert side == "debit"
     await session.rollback()
 
 
@@ -75,6 +82,64 @@ async def test_entry_side_follows_a_corrected_amount(session, business, linked_i
     await session.flush()
     await session.refresh(transaction)
     assert transaction.entry_side == EntrySide.CREDIT
+
+
+async def test_a_credit_card_purchase_is_money_out_though_the_amount_is_positive(
+    session, business, linked_item
+):
+    """The bug this whole derivation exists for.
+
+    Teller signs amounts from the account's point of view, and a credit card
+    is a liability: a purchase increases what you owe, so it arrives positive.
+    Reading the sign alone booked 101 of 110 rows on one real card as income.
+    """
+    card = await repo.upsert_account(
+        session,
+        item=await repo.get_item(session, linked_item.id),
+        raw=RawAccount(
+            provider_account_id="card-1",
+            name="Platinum Card",
+            account_type="credit/credit_card",
+            classification=AccountType.LIABILITY,
+        ),
+    )
+    await session.flush()
+
+    purchase = await _tx(session, business, "123.46", vendor="IKEA", account=card)
+    payment = await _tx(session, business, "-500.00", vendor="PAYMENT", account=card)
+
+    assert purchase.entry_side == EntrySide.DEBIT  # money out: a charge
+    assert payment.entry_side == EntrySide.CREDIT  # money in: paying it down
+
+
+async def test_the_database_agrees_with_the_python_rule(session, business, linked_item):
+    """Two statements of one rule, so this pins them together.
+
+    accounting.entry_side_for_amount is what the code reasons with; the trigger
+    in models.ENTRY_SIDE_FUNCTION is what the data obeys. If they ever drift,
+    every downstream decision quietly splits in two.
+    """
+    card = await repo.upsert_account(
+        session,
+        item=await repo.get_item(session, linked_item.id),
+        raw=RawAccount(
+            provider_account_id="card-2",
+            name="Card",
+            account_type="credit/credit_card",
+            classification=AccountType.LIABILITY,
+        ),
+    )
+    await session.flush()
+    checking = (await repo.list_accounts(session, business_id=business.id))[0]
+
+    for account in (checking, card):
+        for amount in ("-412.55", "-0.01", "0.00", "0.01", "25000.00"):
+            row = await _tx(
+                session, business, amount, vendor=f"{account.name}{amount}", account=account
+            )
+            assert row.entry_side == entry_side_for_amount(
+                Decimal(amount), account.classification
+            ), f"{account.classification} {amount}"
 
 
 async def test_synced_transactions_all_carry_an_entry_side(session, linked_item):

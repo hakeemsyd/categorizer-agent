@@ -5,13 +5,16 @@ from datetime import date
 
 from fastapi import APIRouter, Query
 
+from books.agent.bootstrap import bootstrap_business
 from books.agent.categorizer import categorize_transaction as run_categorizer
 from books.core import repository as repo
-from books.core.categorization import apply_category, confirm_category
+from books.core.categorization import apply_category, confirm_category, propagate_correction
 from books.core.errors import ValidationError
 from books.core.queue import get_dispatcher
 from books.faces.api.deps import AuthDep, SessionDep
 from books.faces.api.schemas import (
+    BootstrapRequest,
+    BootstrapResponse,
     CategorizeBatchRequest,
     CategorizeBatchResponse,
     CategorizeRequest,
@@ -19,8 +22,10 @@ from books.faces.api.schemas import (
     ConfirmRequest,
     HistoryOut,
     RecategorizeRequest,
+    RecategorizeResponse,
     TransactionOut,
     TransactionPage,
+    VendorDecisionOut,
 )
 
 router = APIRouter(dependencies=[AuthDep], tags=["transactions"])
@@ -144,11 +149,45 @@ async def categorize_batch(payload: CategorizeBatchRequest, session: SessionDep)
     return CategorizeBatchResponse(queued=len(transactions))
 
 
-@router.post("/transactions/{transaction_id}/recategorize", response_model=TransactionOut)
+@router.post("/transactions/bootstrap", response_model=BootstrapResponse)
+async def bootstrap(payload: BootstrapRequest, session: SessionDep):
+    """First-pass categorization for a business with no history.
+
+    Runs inline rather than queued: it is a one-off setup step a human is
+    waiting on, and it is one model call per *merchant* — far fewer than per
+    transaction. Use ``max_vendors`` for a trial run before committing to the
+    whole import.
+    """
+    result = await bootstrap_business(
+        session, business_id=payload.business_id, max_vendors=payload.max_vendors
+    )
+    return BootstrapResponse(
+        vendors_seen=result.vendors_seen,
+        vendors_decided=result.vendors_decided,
+        transactions_categorized=result.transactions_categorized,
+        decisions=[
+            VendorDecisionOut(
+                vendor_label=d.vendor_label,
+                category_name=d.category_name,
+                confidence=d.confidence,
+                rationale=d.rationale,
+                applied=d.applied,
+                error=d.error,
+            )
+            for d in result.decisions
+        ],
+    )
+
+
+@router.post("/transactions/{transaction_id}/recategorize", response_model=RecategorizeResponse)
 async def recategorize(
     transaction_id: uuid.UUID, payload: RecategorizeRequest, session: SessionDep
 ):
-    """A human sets the category. This is the only path that marks it reviewed."""
+    """A human sets the category. This is the only path that marks it reviewed.
+
+    By default the decision also reaches the same merchant's other unreviewed
+    transactions, so correcting one row fixes the ones like it.
+    """
     transaction = await repo.get_transaction(session, transaction_id)
     category_id = payload.category_id
 
@@ -165,7 +204,7 @@ async def recategorize(
     if category_id is None:
         raise ValidationError("Provide category_id or category_name")
 
-    return await apply_category(
+    await apply_category(
         session,
         transaction=transaction,
         category_id=category_id,
@@ -173,6 +212,19 @@ async def recategorize(
         confidence=1.0,
         rationale=payload.note or "Set by human review",
         mark_reviewed=True,
+    )
+
+    propagation = None
+    if payload.propagate:
+        propagation = await propagate_correction(
+            session, transaction=transaction, actor=payload.actor
+        )
+
+    return RecategorizeResponse(
+        transaction=TransactionOut.model_validate(transaction),
+        also_updated=propagation.count if propagation else 0,
+        skipped_reviewed=propagation.skipped_reviewed if propagation else 0,
+        vendor_label=propagation.vendor_label if propagation else None,
     )
 
 

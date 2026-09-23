@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, Select, delete, func, literal_column, or_, select
@@ -29,6 +30,7 @@ from books.core.models import (
     Tenant,
     Transaction,
 )
+from books.core.vendors import decision_key, normalize_vendor
 from books.providers.base import RawAccount
 
 # --- tenants ------------------------------------------------------------
@@ -379,11 +381,24 @@ async def upsert_transaction(session: AsyncSession, *, values: dict) -> tuple[uu
     Returns ``(transaction_id, is_new)``. Only provider-owned columns are
     overwritten on conflict — a human's category survives a re-sync.
     """
+    # Derived here, not by the caller: vendor_key must never drift from the
+    # vendor/description it comes from, and every write path — ingestion,
+    # imports, tests — needs it for merchant grouping to work at all.
+    #
+    # entry_side and transaction_type are derived too, but by a database
+    # trigger rather than here, because they depend on the bank account's
+    # classification (a credit card inverts the sign) and no write path should
+    # be able to opt out. See models.ENTRY_SIDE_FUNCTION.
+    values = {
+        **values,
+        "vendor_key": normalize_vendor(values.get("vendor"), values.get("description")),
+    }
     provider_columns = {
         "amount",
         "date",
         "post_date",
         "vendor",
+        "vendor_key",
         "description",
         "memo",
         "transaction_type",
@@ -427,35 +442,205 @@ async def delete_transactions_by_provider_ids(
 async def find_similar_transactions(
     session: AsyncSession, *, transaction: Transaction, limit: int
 ) -> Sequence[Transaction]:
-    """Categorized past transactions from the same business that look alike.
+    """Categorized past transactions from the same merchant.
 
-    Vendor match first; falls back to a description substring. Deliberately
-    simple — swap for embeddings later without touching the agent's interface.
+    Matches on ``vendor_key`` (books.core.vendors), so store numbers and
+    processor prefixes don't split one merchant into many. Human-reviewed
+    rows come first — they are the examples worth imitating.
+
+    Deliberately exact rather than fuzzy: an earlier version also matched the
+    first word of the description, which on real data is often the payment
+    rail ("Incoming Wire", "Zelle Payment") and pulled in every unrelated
+    transfer as a supposedly similar example. Swap in embeddings here later
+    without touching the agent.
     """
-    if limit <= 0:
-        return []
-    clauses = []
-    if transaction.vendor:
-        clauses.append(func.lower(Transaction.vendor) == transaction.vendor.lower())
-    if transaction.description:
-        token = transaction.description.strip().split(" ")[0].lower()
-        if len(token) >= 4:
-            clauses.append(func.lower(Transaction.description).like(f"{token}%"))
-    if not clauses:
+    if limit <= 0 or not transaction.vendor_key:
         return []
 
     stmt = (
         select(Transaction)
         .where(
             Transaction.business_id == transaction.business_id,
+            Transaction.vendor_key == transaction.vendor_key,
             Transaction.id != transaction.id,
             Transaction.category_id.is_not(None),
-            or_(*clauses),
         )
         .order_by(Transaction.last_reviewed_at.desc().nullslast(), Transaction.date.desc())
         .limit(limit)
     )
     return (await session.scalars(stmt)).all()
+
+
+def _latest_agent_proposal() -> Any:
+    """The category the agent last proposed for a transaction, as a subquery."""
+    return (
+        select(CategorizationHistory.category_id)
+        .where(
+            CategorizationHistory.transaction_id == Transaction.id,
+            CategorizationHistory.actor.like("agent:%"),
+        )
+        .order_by(CategorizationHistory.created_at.desc())
+        .limit(1)
+        .correlate(Transaction)
+        .scalar_subquery()
+    )
+
+
+async def find_vendor_corrections(
+    session: AsyncSession, *, transaction: Transaction, limit: int
+) -> Sequence[tuple[Transaction, uuid.UUID]]:
+    """Times a human overrode the agent for this same merchant.
+
+    The highest-signal examples there are: they say not just what the right
+    answer is, but which wrong answer to stop giving. Returns each corrected
+    transaction paired with what the agent had proposed for it.
+    """
+    if limit <= 0 or not transaction.vendor_key:
+        return []
+
+    proposal = _latest_agent_proposal()
+    stmt = (
+        select(Transaction, proposal.label("agent_category_id"))
+        .where(
+            Transaction.business_id == transaction.business_id,
+            Transaction.vendor_key == transaction.vendor_key,
+            Transaction.id != transaction.id,
+            Transaction.last_reviewed_at.is_not(None),
+            Transaction.category_id.is_not(None),
+            proposal.is_not(None),
+            proposal != Transaction.category_id,
+        )
+        .order_by(Transaction.last_reviewed_at.desc())
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [(row[0], row[1]) for row in rows]
+
+
+@dataclass(frozen=True)
+class VendorGroup:
+    """Transactions that can share one decision, grouped and decided together.
+
+    Keyed on ``vendors.decision_key``, not the merchant alone — so one card
+    issuer's "Platinum Card" and "Interest Payment" lines are two groups with
+    two answers rather than one blurred average.
+    """
+
+    vendor_key: str
+    vendor_label: str  # what to show a human / send the model
+    transaction_ids: list[uuid.UUID]
+    sample: list[Transaction]  # a few representative rows, newest first
+    direction: str = ""  # 'debit' | 'credit' — money out or in
+    description_label: str = ""  # what the line says beyond the merchant
+    smallest: Decimal = Decimal(0)
+    largest: Decimal = Decimal(0)
+    total: Decimal = Decimal(0)
+
+    @property
+    def count(self) -> int:
+        return len(self.transaction_ids)
+
+    @property
+    def label(self) -> str:
+        """How to name this group to a human, without repeating the merchant."""
+        extra = self.description_label.title() if self.description_label else ""
+        flow = "money in" if self.direction == "credit" else "money out"
+        detail = f"{extra}, {flow}" if extra else flow
+        return f"{self.vendor_label} ({detail})"
+
+
+async def group_uncategorized_by_vendor(
+    session: AsyncSession,
+    *,
+    business_id: uuid.UUID,
+    sample_size: int = 3,
+    limit: int = 500,
+    only_uncategorized: bool = True,
+) -> list[VendorGroup]:
+    """Transactions bucketed by decision key, busiest first.
+
+    This is what makes a cold start tractable: deciding once per group covers
+    every transaction in it, rather than asking the same question of the model
+    once per row. Building a chart of accounts uses the same view of the data
+    with ``only_uncategorized=False``, so the proposed accounts are shaped by
+    everything that actually landed, not just what is still undecided.
+
+    Rows with no identifiable merchant (a bare wire or cash deposit) have no
+    ``vendor_key`` and are left out — there is nothing to generalize from, so
+    they belong in the per-transaction path.
+    """
+    stmt = select(Transaction).where(
+        Transaction.business_id == business_id,
+        Transaction.vendor_key.is_not(None),
+    )
+    if only_uncategorized:
+        stmt = stmt.where(Transaction.category_id.is_(None))
+    stmt = stmt.order_by(Transaction.vendor_key, Transaction.date.desc())
+    grouped: dict[tuple[str, str, str], list[Transaction]] = {}
+    for row in await session.scalars(stmt):
+        key = decision_key(row.vendor, row.description, row.entry_side)
+        grouped.setdefault(key, []).append(row)
+
+    groups = [
+        VendorGroup(
+            vendor_key=key[0],
+            vendor_label=rows[0].vendor or key[0],
+            transaction_ids=[r.id for r in rows],
+            sample=rows[:sample_size],
+            direction=key[1],
+            description_label=key[2],
+            smallest=min(r.amount for r in rows),
+            largest=max(r.amount for r in rows),
+            total=sum((r.amount for r in rows), Decimal(0)),
+        )
+        for key, rows in grouped.items()
+    ]
+    groups.sort(key=lambda g: (-g.count, g.vendor_key, g.description_label))
+    return groups[:limit]
+
+
+async def find_vendor_peers_to_relabel(
+    session: AsyncSession, *, transaction: Transaction, exclude_reviewed: bool = True
+) -> Sequence[Transaction]:
+    """Other transactions a correction should reach.
+
+    Scoped by ``vendors.decision_key`` — same merchant, same direction, same
+    thing said on the line. The merchant alone is too coarse: money out to a
+    contractor and money back from them are different events, and "Platinum
+    Card" and "Interest Payment" at the same card issuer are different
+    accounts.
+
+    Only rows nobody has reviewed: another human's decision is not ours to
+    overwrite, and ``apply_category`` refuses that write anyway.
+    """
+    if not transaction.vendor_key:
+        return []
+
+    # Narrow in SQL on the indexed merchant key, then apply the finer
+    # discriminators in Python — a merchant's group is small, and this keeps
+    # the normalization rules in one place instead of restating them as SQL.
+    stmt = select(Transaction).where(
+        Transaction.business_id == transaction.business_id,
+        Transaction.vendor_key == transaction.vendor_key,
+        Transaction.id != transaction.id,
+    )
+    if exclude_reviewed:
+        stmt = stmt.where(Transaction.last_reviewed_at.is_(None))
+    # Already right? Then there is nothing to change.
+    stmt = stmt.where(
+        or_(
+            Transaction.category_id.is_(None),
+            Transaction.category_id != transaction.category_id,
+        )
+    )
+    candidates = (await session.scalars(stmt.order_by(Transaction.date.desc()))).all()
+
+    target = decision_key(transaction.vendor, transaction.description, transaction.entry_side)
+    return [
+        candidate
+        for candidate in candidates
+        if decision_key(candidate.vendor, candidate.description, candidate.entry_side) == target
+    ]
 
 
 # --- categorization history --------------------------------------------

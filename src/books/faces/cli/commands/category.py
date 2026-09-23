@@ -57,7 +57,10 @@ def list_categories(
         return
 
     if not rows:
-        ui.console.print("[dim]No categories yet. Run `books category seed` to start.[/]")
+        ui.console.print(
+            "[dim]No categories yet. Run `books category bootstrap` to build a chart from "
+            "the transactions already synced, or `books category seed` for a generic one.[/]"
+        )
         return
 
     table = Table(box=None, header_style="bold")
@@ -116,6 +119,75 @@ def seed_categories(
         )
     if not created and not skipped:
         ui.console.print("[dim]Nothing to do.[/]")
+
+
+@app.command("bootstrap")
+def bootstrap_categories(
+    business: str = typer.Option(None, "--business", "-b"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Create the accounts without asking."),
+    max_merchants: int = typer.Option(120, "--max-merchants", help="Merchant groups to consider."),
+) -> None:
+    """Build a chart of accounts from the merchants already synced.
+
+    Run this before the first categorization: the agent can only file a
+    transaction into an account that exists. It proposes, you approve — nothing
+    is created until you say so, and accounts you already have are untouched.
+    """
+    try:
+        with ui.client() as api:
+            business_id = _resolve.business_id(api, business)
+            ui.console.print("[dim]Reading the merchants and drafting a chart…[/]")
+            proposal = api.bootstrap_chart_of_accounts(business_id, max_merchants=max_merchants)
+    except BooksAPIError as exc:
+        ui.handle(exc)
+        return
+
+    proposed = proposal["proposed"]
+    if not proposed:
+        ui.console.print(
+            f"[dim]Nothing to add — the existing chart already covers all "
+            f"{proposal['merchants_seen']} merchant groups.[/]"
+        )
+        return
+
+    table = Table(box=None, header_style="bold")
+    table.add_column("name")
+    table.add_column("type")
+    table.add_column("covers")
+    for row in proposed:
+        table.add_row(
+            row["name"],
+            _type_cell(row["account_type"]),
+            "[dim]" + ", ".join(row.get("covers") or [])[:56] + "[/]",
+        )
+    ui.console.print(table)
+    ui.console.print(
+        f"\n{len(proposed)} accounts proposed from {proposal['merchants_seen']} merchant groups."
+    )
+
+    if not yes and not typer.confirm("Create these accounts?", default=True):
+        ui.console.print("[dim]Nothing created.[/]")
+        return
+
+    try:
+        with ui.client() as api:
+            # Send back the list that was displayed: creating anything else
+            # would mean the approval was for a different chart.
+            result = api.bootstrap_chart_of_accounts(business_id, apply=True, proposed=proposed)
+    except BooksAPIError as exc:
+        ui.handle(exc)
+        return
+
+    created, skipped = result["created"], result["skipped"]
+    counts: dict[str, int] = {}
+    for row in created:
+        counts[row["account_type"]] = counts.get(row["account_type"], 0) + 1
+    if created:
+        summary = "  ".join(f"{_type_cell(t)} {n}" for t, n in sorted(counts.items()))
+        ui.ok(f"Created {len(created)} accounts:  {summary}")
+    if skipped:
+        ui.console.print(f"[dim]Kept {len(skipped)} that already existed.[/]")
+    ui.console.print("[dim]Next: `books tx bootstrap` to categorize into them.[/]")
 
 
 @app.command("add")

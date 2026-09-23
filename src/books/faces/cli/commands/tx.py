@@ -83,7 +83,7 @@ def show_transaction(transaction_id: str = typer.Argument(..., help="Transaction
     side = transaction.get("entry_side")
     body = [
         f"[bold]{transaction.get('vendor') or transaction.get('description') or '—'}[/]",
-        f"{transaction['date']}   {ui.money(transaction['amount'])}   "
+        f"{transaction['date']}   {ui.money(transaction['amount'], side)}   "
         f"{ui.entry_side(side)} ({'money out' if side == 'debit' else 'money in'})",
         f"category: {names.get(str(transaction.get('category_id')), '[dim]uncategorized[/]')}",
         f"confidence: {transaction.get('confidence') or '—'}   "
@@ -147,6 +147,56 @@ def categorize(
         ui.console.print(f"  [dim]{result['rationale']}[/]")
 
 
+@app.command("bootstrap")
+def bootstrap(
+    business: str = typer.Option(None, "--business", "-b"),
+    max_vendors: int = typer.Option(
+        None, "--max-vendors", help="Stop after this many merchants — try it small first."
+    ),
+) -> None:
+    """First-pass categorization of a fresh import, one decision per merchant.
+
+    Use this right after the initial sync, when there is no history for the
+    agent to learn from. It groups everything uncategorized by merchant and
+    makes one decision per merchant, so the same shop can't land in two
+    different categories — and it is far fewer model calls than going row by
+    row. Nothing is marked reviewed; work through `books tx review` after.
+    """
+    try:
+        with ui.client() as api:
+            business_id = _resolve.business_id(api, business)
+            ui.console.print("[dim]Deciding one category per merchant — this can take a while…[/]")
+            result = api.bootstrap(business_id, max_vendors=max_vendors)
+    except BooksAPIError as exc:
+        ui.handle(exc)
+        return
+
+    decisions = result.get("decisions", [])
+    if not decisions:
+        ui.ok("Nothing uncategorized with an identifiable merchant.")
+        return
+
+    table = Table(box=None, header_style="bold")
+    table.add_column("merchant")
+    table.add_column("category")
+    table.add_column("conf", justify="right")
+    table.add_column("rows", justify="right")
+    for decision in sorted(decisions, key=lambda d: -(d.get("applied") or 0)):
+        failed = decision.get("error")
+        table.add_row(
+            decision["vendor_label"][:28],
+            decision.get("category_name") or f"[yellow]skipped[/] [dim]{failed or ''}[/]"[:40],
+            f"{decision.get('confidence', 0):.2f}" if not failed else "",
+            str(decision.get("applied") or ""),
+        )
+    ui.console.print(table)
+    ui.ok(
+        f"{result['transactions_categorized']} transaction(s) categorized "
+        f"across {result['vendors_decided']} of {result['vendors_seen']} merchant(s)"
+    )
+    ui.console.print("  [dim]Nothing is marked reviewed — run `books tx review` next.[/]")
+
+
 @app.command("categorize-batch")
 def categorize_batch(
     business: str = typer.Option(None, "--business", "-b"),
@@ -199,17 +249,44 @@ def recategorize(
     transaction_id: str = typer.Argument(..., help="Transaction id."),
     category: str = typer.Option(..., "--category", "-c", help="Category name."),
     note: str = typer.Option("", "--note", help="Why you changed it."),
+    propagate: bool = typer.Option(
+        True,
+        "--propagate/--only-this-one",
+        help="Also fix this merchant's other unreviewed transactions.",
+    ),
 ) -> None:
-    """Correct a category. Marks the transaction human-reviewed."""
+    """Correct a category. Marks the transaction human-reviewed.
+
+    By default the same correction is applied to the merchant's other
+    transactions that nobody has reviewed — a correction is usually a
+    statement about the merchant, not just this row.
+    """
     try:
         with ui.client() as api:
-            api.recategorize(
-                transaction_id, actor=ui.actor(), category_name=category, note=note or None
+            result = api.recategorize(
+                transaction_id,
+                actor=ui.actor(),
+                category_name=category,
+                note=note or None,
+                propagate=propagate,
             )
     except BooksAPIError as exc:
         ui.handle(exc)
         return
+
     ui.ok(f"Set to {category} and marked reviewed")
+    _report_propagation(result)
+
+
+def _report_propagation(result: dict) -> None:
+    """Say plainly what else changed — a silent bulk edit is a nasty surprise."""
+    also = result.get("also_updated") or 0
+    skipped = result.get("skipped_reviewed") or 0
+    if also:
+        vendor = result.get("vendor_label") or "the same merchant"
+        ui.console.print(f"  [dim]Also updated {also} other {vendor} transaction(s).[/]")
+    if skipped:
+        ui.console.print(f"  [dim]Left {skipped} alone — already reviewed by a human.[/]")
 
 
 @app.command("confirm")
@@ -260,7 +337,7 @@ def _review_loop(
         ui.console.print(
             Panel(
                 f"[bold]{row.get('vendor') or row.get('description') or '—'}[/]\n"
-                f"{row['date']}   {ui.money(row['amount'])}\n"
+                f"{row['date']}   {ui.money(row['amount'], row.get('entry_side'))}\n"
                 f"{ui.entry_side(row.get('entry_side'))} "
                 f"agent says: [cyan]{current}[/] "
                 f"(confidence {row.get('confidence') or '—'})\n"
@@ -293,11 +370,12 @@ def _review_loop(
                 continue
 
         try:
-            api.recategorize(row["id"], actor=ui.actor(), category_name=answer)
+            result = api.recategorize(row["id"], actor=ui.actor(), category_name=answer)
         except BooksAPIError as exc:
             ui.err_console.print(f"[yellow]{exc.detail}[/]")
             continue
         ui.ok(f"Set to {answer}")
+        _report_propagation(result)
 
         if make_rule and row.get("vendor"):
             api.create_rule(

@@ -72,6 +72,43 @@ class SeedChartResponse(BaseModel):
     )
 
 
+class ProposedCategoryOut(BaseModel):
+    """One account the agent thinks the business needs, before anyone agrees."""
+
+    name: str
+    account_type: AccountType
+    description: str
+    covers: list[str] = Field(
+        default_factory=list, description="Merchants from this business the account is for"
+    )
+
+
+class BuildChartRequest(BaseModel):
+    apply: bool = Field(
+        default=False,
+        description="False proposes only and writes nothing — the default, because a "
+        "chart of accounts is a structural decision a human should approve.",
+    )
+    proposed: list[ProposedCategoryOut] | None = Field(
+        default=None,
+        description="Apply exactly these accounts instead of asking the model again. "
+        "Send back what was proposed, so what a human approved is what gets created.",
+    )
+    max_merchants: int = Field(
+        default=120, ge=1, le=500, description="How many merchant groups to show the model."
+    )
+
+
+class BuildChartResponse(BaseModel):
+    merchants_seen: int
+    proposed: list[ProposedCategoryOut]
+    created: list[CategoryOut] = Field(default_factory=list)
+    skipped: list[str] = Field(
+        default_factory=list, description="Proposed names that already existed"
+    )
+    applied: bool = False
+
+
 # --- items / accounts ---------------------------------------------------
 
 
@@ -189,6 +226,19 @@ class RecategorizeRequest(BaseModel):
     category_name: str | None = None
     actor: str
     note: str | None = None
+    #: Apply the same decision to this merchant's other unreviewed
+    #: transactions. On by default — a correction is usually a statement
+    #: about the merchant, not just the one row.
+    propagate: bool = True
+
+
+class RecategorizeResponse(BaseModel):
+    transaction: TransactionOut
+    #: How many other transactions from the same merchant were updated to
+    #: match, and how many were left alone because a human had reviewed them.
+    also_updated: int = 0
+    skipped_reviewed: int = 0
+    vendor_label: str | None = None
 
 
 class ConfirmRequest(BaseModel):
@@ -235,6 +285,31 @@ class CategorizeBatchRequest(BaseModel):
 
 class CategorizeBatchResponse(BaseModel):
     queued: int
+
+
+class BootstrapRequest(BaseModel):
+    """First-pass categorization, one decision per merchant."""
+
+    business_id: uuid.UUID
+    max_vendors: int | None = Field(
+        default=None, ge=1, description="Stop after this many merchants — useful for a trial run."
+    )
+
+
+class VendorDecisionOut(BaseModel):
+    vendor_label: str
+    category_name: str | None = None
+    confidence: float = 0.0
+    rationale: str = ""
+    applied: int = 0
+    error: str | None = None
+
+
+class BootstrapResponse(BaseModel):
+    vendors_seen: int
+    vendors_decided: int
+    transactions_categorized: int
+    decisions: list[VendorDecisionOut] = Field(default_factory=list)
 
 
 class HistoryOut(ORMModel):
