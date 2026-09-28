@@ -183,6 +183,7 @@ matter:
 | `BOOKS_ANTHROPIC_API_KEY` | Powers the categorization agent. |
 | `BOOKS_CATEGORIZER_MODEL` | Defaults to `claude-sonnet-5`. |
 | `BOOKS_CONFIDENCE_THRESHOLD` | Below this, a transaction is flagged for review. |
+| `BOOKS_ANTHROPIC_WORKSPACE_ID` | Only for an org-level key that must name a workspace. |
 | `BOOKS_DEFAULT_PROVIDER` | `teller`, or `fake` for demos and tests. |
 
 Two keys never leave the core service: `BOOKS_ENCRYPTION_KEY` and
@@ -237,6 +238,26 @@ charge from a 412.55 AWS refund when you total up the expense account.
 
 ### Getting a chart of accounts
 
+The agent can only file a transaction into an account that exists, so the
+buckets come first. There are two ways to get them.
+
+**From your own transactions** — better, once you have synced anything:
+
+```bash
+books sync -b "Coding Crafts"
+books category bootstrap -b "Coding Crafts"   # proposes; you approve
+```
+
+It reads every merchant in the business's transactions and proposes the
+accounts needed to cover them, with the merchants each one is for so you can
+check the reasoning. Nothing is written until you say yes, and what you
+approved is exactly what gets created — the confirmed list is sent back rather
+than the model being asked a second time. Accounts you already have are never
+renamed, replaced or removed, so it is safe to re-run after a later sync to
+cover merchants that have since appeared.
+
+**Generic** — when there is nothing synced yet:
+
 ```bash
 books category seed -b "Coding Crafts"      # ~40 standard accounts
 books category list -b "Coding Crafts"
@@ -246,6 +267,9 @@ books category list -b "Coding Crafts" -t revenue
 Seeding is idempotent: accounts you already have are left exactly as they are,
 so you can run it again after adding your own. `books init --business NAME`
 seeds automatically; pass `--no-seed` to skip.
+
+Either way, `books tx bootstrap` refuses to run against an empty chart and
+tells you which of these to reach for.
 
 To bring your own, `books category import` takes a CSV with `name`,
 `account_type` and an optional `description` — see
@@ -266,16 +290,18 @@ books init --tenant NAME [--business NAME]    First-run setup
 
 books business list | add NAME
 books category list [-t TYPE] | seed | add NAME -t TYPE
+books category bootstrap -b BUSINESS           Draft a chart from synced merchants
 books category import FILE.csv | archive ID | types
 books item list | accounts | refresh ID
 
 books link -b BUSINESS [--since YYYY-MM-DD]   Connect a bank in the browser
 books sync [-b BUSINESS] [--backfill] [--since DATE] [--queue]
 
-books tx list -b BUSINESS [--needs-review] [--uncategorized] [--search TEXT]
+books tx bootstrap -b BUSINESS                First pass: one decision per merchant
+books tx list -b BUSINESS [--needs-review] [--uncategorized] [--reviewed] [--search TEXT]
 books tx show ID                              Detail + full audit trail
 books tx categorize ID                        Run the agent over one row
-books tx recategorize ID -c "Category"        Correct it (marks reviewed)
+books tx recategorize ID -c "Category"        Correct it (marks reviewed, propagates)
 books tx confirm ID                           Agree with it (marks reviewed)
 books tx review -b BUSINESS                   Walk the review queue
 
@@ -351,7 +377,72 @@ For each new transaction the agent (a LangGraph subgraph in
 moves only when a human confirms or corrects — a high-confidence transaction
 that no one has looked at is normal, not a bug.
 
-Rules are how corrections stick. After fixing the same vendor twice:
+### The merchant is the unit of decision
+
+Transactions repeat by merchant: in the sample data, 222 transactions come
+from 95 merchants, and that ratio only improves as history grows. So the
+system groups on a **normalized merchant key** (`vendor_key`, from
+`books.core.vendors`) — `SQ *BLUE BOTTLE #417` and `BLUE BOTTLE` are one
+merchant, while `UBER` and `UBER EATS` deliberately stay apart. Payment rails
+("Incoming Wire", "Zelle Payment") are not merchants and group on nothing.
+
+But the merchant alone is too coarse to *copy an answer across*, because one
+merchant routinely covers more than one account:
+
+| Same merchant | | Different accounts |
+|---|---|---|
+| `AMERICAN EXPRESS \| Platinum Card` | both money out | Credit Card Payable |
+| `AMERICAN EXPRESS \| Interest Payment` | | Interest Expense |
+| `SAM BLOCK \| Zelle Payment` −117.65 | opposite directions | contractor spend |
+| `SAM BLOCK \| Zelle Payment` +43.40 | | not the same event |
+
+So a decision generalizes only within an identical **`decision_key`** —
+merchant, direction, *and* what the line says. A description that merely
+restates the merchant (`SHELL | Shell`) discriminates nothing and is ignored,
+so normal merchants still group as one. Splitting too finely costs one extra
+human decision; merging too coarsely silently misbooks money.
+
+That one idea is what makes all three parts of the quality loop work.
+
+**Cold start — nothing to learn from yet.** Two steps, in this order: the
+buckets, then what goes in them.
+
+```bash
+books category bootstrap -b "Coding Crafts"  # step 1: the chart, from your merchants
+books tx bootstrap -b "Coding Crafts"        # step 2: add --max-vendors 5 to try it small
+```
+
+Step one groups the same way step two does, so the chart is proposed against
+the decisions that will actually be made — no account is proposed for a
+merchant that will never be asked about, and no merchant is left without
+somewhere to go.
+
+One model call per merchant rather than per transaction, applied to that
+merchant's whole group. On the sample data that's 93 calls instead of 220, and
+the same shop can't land in two categories. Nothing is marked reviewed — it's
+still the model's opinion, just organized the way a human wants to review it.
+
+**Getting better — verified work becomes the evidence.** The prompt ranks what
+it's shown, strongest first: a *correction* (a human overruling the agent for
+this merchant), then a human-reviewed transaction, then the agent's own earlier
+guesses (explicitly labelled as such, so agreement with itself isn't mistaken
+for confirmation), then the provider's hint.
+
+**Adapting — one correction fixes the rest.**
+
+```bash
+books tx recategorize <id> -c "Subcontractors & Freelancers"
+# ✓ Set to Subcontractors & Freelancers and marked reviewed
+#   Also updated 4 other SAM BLOCK transaction(s).
+```
+
+A correction reaches the other **unreviewed** transactions with the same
+`decision_key` — same merchant, same direction, same kind of line. Rows another human
+already ruled on are never touched — `apply_category` refuses that write
+regardless. Propagated rows are recorded as `propagation:cli:you`, not as
+though you reviewed them personally, and `--only-this-one` opts out.
+
+Rules are the next step up, for when you want the model skipped entirely:
 
 ```bash
 books rule add "GUSTO" -c "Payroll" -b "Coding Crafts"
@@ -393,6 +484,7 @@ an agent should only call them on a person's behalf.
 src/books/
 ├── core/          All business logic. Nothing here imports FastAPI, Celery or a vendor SDK.
 │   ├── accounting.py      Account types, normal balances, entry sides
+│   ├── vendors.py         Merchant normalization — the grouping key
 │   ├── chart_of_accounts.py  The default chart used by `books category seed`
 │   ├── models.py          Schema (source of truth for migrations)
 │   ├── repository.py      Data access
@@ -401,7 +493,7 @@ src/books/
 │   ├── sync.py            Provider-agnostic sync orchestration
 │   └── queue.py           Indirection over Celery (swappable in tests)
 ├── providers/     TransactionProvider protocol, TellerProvider, FakeProvider
-├── agent/         LangGraph categorization subgraph
+├── agent/         LangGraph categorization subgraph, chart builder, cold-start bootstrap
 ├── workers/       Celery app, tasks, beat schedule, shared event loop
 ├── sdk/           BooksClient — the REST client every non-API face uses
 ├── faces/         Thin transports: api/, cli/, mcp/  (see faces/README.md)
@@ -452,6 +544,18 @@ Schema changes:
 make revision m="add whatever"
 make migrate
 ```
+
+Starting over:
+
+```bash
+make reset-db     # drops everything, then rebuilds from migrations
+```
+
+This destroys all data, including linked banks — the stored access tokens go
+with it, so re-link through `books link` afterwards. It refuses to run against
+anything but a local host, so it cannot be pointed at Supabase. Stop the worker
+and beat first; beat syncs hourly and will happily write into a database you
+are in the middle of dropping.
 
 ### Adding a provider
 

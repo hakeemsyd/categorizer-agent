@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     categorizer_actor: str = "agent:categorizer-v1"
     confidence_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
     similar_transaction_limit: int = Field(default=15, ge=0, le=100)
+    #: How many "a human overruled the agent here" examples to put in the
+    #: prompt. Few but high-signal — they outrank everything else.
+    correction_example_limit: int = Field(default=5, ge=0, le=50)
+    #: Representative transactions shown per merchant when categorizing a
+    #: whole vendor group at once (`books tx bootstrap`).
+    vendor_sample_size: int = Field(default=3, ge=1, le=20)
 
     @property
     def is_local(self) -> bool:

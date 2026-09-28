@@ -124,6 +124,84 @@ async def confirm_category(
     )
 
 
+@dataclass(frozen=True)
+class Propagation:
+    """What a human correction changed beyond the row they were looking at."""
+
+    vendor_label: str
+    category_name: str
+    updated: list[uuid.UUID]
+    skipped_reviewed: int
+
+    @property
+    def count(self) -> int:
+        return len(self.updated)
+
+
+async def propagate_correction(
+    session: AsyncSession, *, transaction: Transaction, actor: str
+) -> Propagation:
+    """Apply a human's decision to the rest of that merchant's transactions.
+
+    A correction is a statement about the merchant, not just the one row that
+    happened to be on screen — so the same answer is written to every other
+    transaction from that merchant that nobody has reviewed. Rows a human has
+    already ruled on are left alone: their decision outranks this inference,
+    and ``apply_category`` would refuse the write regardless.
+
+    Every write goes through the same audited path, so this is visible in
+    ``categorization_history`` and reversible one row at a time.
+    """
+    if transaction.category_id is None:
+        raise ValidationError("Cannot propagate a correction with no category")
+
+    category = await repo.get_category(session, transaction.category_id)
+    peers = await repo.find_vendor_peers_to_relabel(session, transaction=transaction)
+    reviewed_peers = await repo.find_vendor_peers_to_relabel(
+        session, transaction=transaction, exclude_reviewed=False
+    )
+
+    updated: list[uuid.UUID] = []
+    for peer in peers:
+        await apply_category(
+            session,
+            transaction=peer,
+            category_id=transaction.category_id,
+            # Names both facts: a human's decision drove this, but that human
+            # never looked at *this* row. Claiming plain "cli:hakeem" in the
+            # audit trail would overstate what they actually reviewed.
+            actor=f"propagation:{actor}",
+            confidence=1.0,
+            rationale=(
+                f"Follows a human correction on {transaction.vendor or category.name} "
+                f"(transaction {transaction.id})"
+            ),
+            # Inferred from a human's decision, not itself reviewed — so it
+            # stays in the review queue's reach rather than claiming approval
+            # nobody gave.
+            mark_reviewed=False,
+        )
+        updated.append(peer.id)
+
+    propagation = Propagation(
+        vendor_label=transaction.vendor or transaction.vendor_key or "this merchant",
+        category_name=category.name,
+        updated=updated,
+        skipped_reviewed=len(reviewed_peers) - len(peers),
+    )
+    if updated:
+        log.info(
+            "correction.propagated",
+            source_transaction_id=str(transaction.id),
+            vendor_key=transaction.vendor_key,
+            category=category.name,
+            updated=len(updated),
+            skipped_reviewed=propagation.skipped_reviewed,
+            actor=actor,
+        )
+    return propagation
+
+
 def match_rule(transaction: Transaction, rules: list[Rule]) -> Rule | None:
     """First matching standing rule, by priority.
 

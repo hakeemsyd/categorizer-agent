@@ -17,7 +17,12 @@ from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from books.agent.prompts import NO_SIMILAR, SYSTEM_PROMPT, TRANSACTION_TEMPLATE
+from books.agent.prompts import (
+    NO_CORRECTIONS,
+    NO_SIMILAR,
+    SYSTEM_PROMPT,
+    TRANSACTION_TEMPLATE,
+)
 from books.config import get_settings
 from books.core import repository as repo
 from books.core.accounting import AccountType, EntrySide
@@ -67,6 +72,7 @@ class _State(TypedDict, total=False):
     account: Account
     categories: list[Category]
     similar: list[Transaction]
+    corrections: list[tuple[Transaction, uuid.UUID]]
     prompt: str
     classification: Classification | None
     category_id: uuid.UUID | None
@@ -89,9 +95,15 @@ async def _load_context(state: _State) -> dict[str, Any]:
             session, transaction=transaction, limit=settings.similar_transaction_limit
         )
     )
+    corrections = list(
+        await repo.find_vendor_corrections(
+            session, transaction=transaction, limit=settings.correction_example_limit
+        )
+    )
     return {
         "categories": categories,
         "similar": similar,
+        "corrections": corrections,
         "business": await repo.get_business(session, transaction.business_id),
         "account": await session.get(Account, transaction.account_id),
     }
@@ -264,12 +276,17 @@ async def _lazy_anthropic_classifier(system: str, prompt: str) -> Classification
 
 
 @lru_cache(maxsize=1)
-def anthropic_classifier() -> Classifier:
-    """Claude-backed classifier, built on first use so tests never need a key."""
+def build_chat_model() -> Any:
+    """The configured Claude client, shared by every agent that needs one.
+
+    Kept in one place so the awkward details — the workspace header an
+    organization-level key requires, and the temperature current models now
+    reject — are stated once rather than drifting between call sites.
+    """
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise ConfigurationError(
-            "BOOKS_ANTHROPIC_API_KEY is unset — the categorizer cannot call the model."
+            "BOOKS_ANTHROPIC_API_KEY is unset — the agent cannot call the model."
         )
 
     from langchain_anthropic import ChatAnthropic
@@ -281,16 +298,23 @@ def anthropic_classifier() -> Classifier:
         if settings.anthropic_workspace_id
         else None
     )
-    chat = ChatAnthropic(
+    return ChatAnthropic(
         model_name=settings.categorizer_model,
         api_key=SecretStr(settings.anthropic_api_key),
-        temperature=0,
-        max_tokens_to_sample=1024,
-        timeout=60,
+        # No temperature: the current Claude models reject it as deprecated,
+        # and structured output over a fixed chart of accounts is constrained
+        # enough that nudging sampling bought little anyway.
+        max_tokens_to_sample=4096,
+        timeout=120,
         stop=None,
         default_headers=headers,
     )
-    model = chat.with_structured_output(Classification)
+
+
+@lru_cache(maxsize=1)
+def anthropic_classifier() -> Classifier:
+    """Claude-backed classifier, built on first use so tests never need a key."""
+    model = build_chat_model().with_structured_output(Classification)
 
     async def classify(system: str, prompt: str) -> Classification:
         result = await model.ainvoke(
@@ -316,14 +340,26 @@ def _render_prompt(state: _State) -> str:
         f"- {c.name} [{c.account_type.value}]" + (f": {c.description}" if c.description else "")
         for c in state["categories"]
     )
+    categories_list = state["categories"]
+    # Spell out which rows carry a human's authority and which are only the
+    # model's own past guesses — the system prompt ranks them very differently.
     similar = (
         "\n".join(
-            f"- {t.date} {_money(t.amount)} {t.vendor or t.description} -> "
-            f"{_category_name(state['categories'], t.category_id)}"
-            f"{' (human-reviewed)' if t.last_reviewed_at else ''}"
+            f"- {t.date} {_money(t.amount)} {_describe(t)} -> "
+            f"{_category_name(categories_list, t.category_id)}"
+            f"{' (human-reviewed)' if t.last_reviewed_at else ' (unreviewed guess)'}"
             for t in state["similar"]
         )
         or NO_SIMILAR
+    )
+    corrections = (
+        "\n".join(
+            f"- {t.date} {_money(t.amount)} {_describe(t)}: "
+            f"the agent said {_category_name(categories_list, proposed)}, "
+            f"a human changed it to {_category_name(categories_list, t.category_id)}"
+            for t, proposed in state.get("corrections", [])
+        )
+        or NO_CORRECTIONS
     )
     entry_side = EntrySide(transaction.entry_side)
     return TRANSACTION_TEMPLATE.format(
@@ -343,7 +379,23 @@ def _render_prompt(state: _State) -> str:
             account.classification.value if account and account.classification else "unknown"
         ),
         similar=similar,
+        corrections=corrections,
     )
+
+
+def _describe(transaction: Transaction) -> str:
+    """Merchant plus what the line actually says.
+
+    Showing only the merchant hides the distinction that decides the account:
+    "American Express / Platinum Card" and "American Express / Interest
+    Payment" are the same merchant and the same direction, but different
+    accounts.
+    """
+    vendor = transaction.vendor or ""
+    description = transaction.description or ""
+    if description and description.strip().upper() != vendor.strip().upper():
+        return f"{vendor} / {description}".strip(" /")
+    return vendor or description
 
 
 def _money(amount: Decimal | None) -> str:
