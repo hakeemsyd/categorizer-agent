@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from books.agent.categorizer import Classification, Classifier, _lazy_anthropic_classifier
+from books.agent.categorizer import Classification, Classifier, _lazy_classifier
 from books.agent.prompts import BOOTSTRAP_SYSTEM_PROMPT, VENDOR_TEMPLATE
 from books.config import get_settings
 from books.core import repository as repo
@@ -73,7 +73,7 @@ async def bootstrap_business(
     if max_vendors is not None:
         groups = groups[:max_vendors]
 
-    decide = classifier or _lazy_anthropic_classifier
+    decide = classifier or _lazy_classifier
     rules = list(await repo.list_rules(session, business_id=business_id))
     result = BootstrapResult(vendors_seen=len(groups))
 

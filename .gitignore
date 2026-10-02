@@ -21,6 +21,8 @@ htmlcov/
 # Never commit real credentials: Plaid keys, Supabase URLs, the Fernet key
 # that decrypts stored access tokens, or Anthropic keys.
 .env
+# Local agent tool config — holds BOOKS_API_TOKEN in plaintext.
+.codex/
 .env.*
 !.env.example
 *.pem

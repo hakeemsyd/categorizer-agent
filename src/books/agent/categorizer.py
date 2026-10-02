@@ -249,7 +249,7 @@ async def categorize_transaction(
         "transaction": transaction,
         # Lazy: a standing rule short-circuits before the model is ever built,
         # so a business running purely on rules needs no Anthropic key.
-        "classifier": classifier or _lazy_anthropic_classifier,
+        "classifier": classifier or _lazy_classifier,
         "force": force,
         "confidence": 0.0,
         "rationale": "",
@@ -271,22 +271,56 @@ async def categorize_transaction(
 # --- the real model -----------------------------------------------------
 
 
-async def _lazy_anthropic_classifier(system: str, prompt: str) -> Classification:
-    return await anthropic_classifier()(system, prompt)
+async def _lazy_classifier(system: str, prompt: str) -> Classification:
+    return await configured_classifier()(system, prompt)
 
 
 @lru_cache(maxsize=1)
 def build_chat_model() -> Any:
-    """The configured Claude client, shared by every agent that needs one.
+    """The configured chat model, shared by every agent that needs one.
 
-    Kept in one place so the awkward details — the workspace header an
-    organization-level key requires, and the temperature current models now
-    reject — are stated once rather than drifting between call sites.
+    One place, because the awkward per-provider details — a workspace header,
+    a temperature the model rejects, an OpenAI-compatible base URL — are the
+    kind of thing that silently diverges between call sites otherwise.
     """
     settings = get_settings()
+    if settings.llm_provider == "anthropic":
+        return _build_anthropic(settings)
+    return _build_qwen(settings)
+
+
+def _build_qwen(settings: Any) -> Any:
+    """Qwen through DashScope, which serves the OpenAI wire format.
+
+    So the OpenAI client is the client here — there is no Qwen-specific SDK
+    worth taking on for a chat-completions call.
+    """
+    if not settings.qwen_api_key:
+        raise ConfigurationError(
+            "BOOKS_QWEN_API_KEY is unset — the agent cannot call the model. "
+            "Get a key from Alibaba Cloud Model Studio, and make sure it is "
+            "issued for the same region as BOOKS_QWEN_BASE_URL."
+        )
+
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(
+        model=settings.categorizer_model,
+        api_key=SecretStr(settings.qwen_api_key),
+        base_url=settings.qwen_base_url,
+        # Low rather than absent: unlike the current Claude models Qwen still
+        # accepts temperature, and every task here picks one item from a fixed
+        # list, where sampling variety is a liability rather than a feature.
+        temperature=0,
+        max_completion_tokens=4096,
+        timeout=120,
+    )
+
+
+def _build_anthropic(settings: Any) -> Any:
     if not settings.anthropic_api_key:
         raise ConfigurationError(
-            "BOOKS_ANTHROPIC_API_KEY is unset — the agent cannot call the model."
+            "BOOKS_ANTHROPIC_API_KEY is unset but BOOKS_LLM_PROVIDER=anthropic."
         )
 
     from langchain_anthropic import ChatAnthropic
@@ -301,9 +335,7 @@ def build_chat_model() -> Any:
     return ChatAnthropic(
         model_name=settings.categorizer_model,
         api_key=SecretStr(settings.anthropic_api_key),
-        # No temperature: the current Claude models reject it as deprecated,
-        # and structured output over a fixed chart of accounts is constrained
-        # enough that nudging sampling bought little anyway.
+        # No temperature: the current Claude models reject it as deprecated.
         max_tokens_to_sample=4096,
         timeout=120,
         stop=None,
@@ -312,7 +344,7 @@ def build_chat_model() -> Any:
 
 
 @lru_cache(maxsize=1)
-def anthropic_classifier() -> Classifier:
+def configured_classifier() -> Classifier:
     """Claude-backed classifier, built on first use so tests never need a key."""
     model = build_chat_model().with_structured_output(Classification)
 

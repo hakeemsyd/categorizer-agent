@@ -180,11 +180,53 @@ matter:
 | `BOOKS_TELLER_ENVIRONMENT` | `sandbox` (default), `development`, or `production`. |
 | `BOOKS_TELLER_CERT_PATH` / `_KEY_PATH` | Mutual-TLS cert/key. Required outside sandbox. |
 | `BOOKS_TELLER_SIGNING_SECRET` | Verifies `Teller-Signature` on incoming webhooks. |
-| `BOOKS_ANTHROPIC_API_KEY` | Powers the categorization agent. |
-| `BOOKS_CATEGORIZER_MODEL` | Defaults to `claude-sonnet-5`. |
+| `BOOKS_LLM_PROVIDER` | `qwen` (default) or `anthropic`. |
+| `BOOKS_QWEN_API_KEY` | Powers the categorization agent. From Alibaba Cloud Model Studio. |
+| `BOOKS_QWEN_BASE_URL` | DashScope's OpenAI-compatible endpoint. Singapore by default. |
+| `BOOKS_CATEGORIZER_MODEL` | Defaults to `qwen-plus`. Must match the provider. |
 | `BOOKS_CONFIDENCE_THRESHOLD` | Below this, a transaction is flagged for review. |
+| `BOOKS_ANTHROPIC_API_KEY` | Only read when `BOOKS_LLM_PROVIDER=anthropic`. |
 | `BOOKS_ANTHROPIC_WORKSPACE_ID` | Only for an org-level key that must name a workspace. |
 | `BOOKS_DEFAULT_PROVIDER` | `teller`, or `fake` for demos and tests. |
+
+### Choosing the model
+
+The agent runs on **Qwen** by default, through Alibaba Cloud Model Studio
+(DashScope), which serves the OpenAI wire format — so the OpenAI client is the
+client, and there is no Qwen-specific SDK to take on.
+
+```bash
+BOOKS_LLM_PROVIDER=qwen
+BOOKS_QWEN_API_KEY=sk-...
+BOOKS_CATEGORIZER_MODEL=qwen-plus
+```
+
+Two things to watch:
+
+- **The key and the base URL are region-scoped together.** A Singapore key
+  against the Beijing URL (`https://dashscope.aliyuncs.com/compatible-mode/v1`)
+  fails authentication, which reads like a bad key rather than a wrong region.
+- **Set the model and the provider together.** `claude-sonnet-5` means nothing
+  to DashScope, and `qwen-plus` means nothing to Anthropic.
+
+Anthropic is kept as a switchable alternative rather than deleted:
+
+```bash
+BOOKS_LLM_PROVIDER=anthropic
+BOOKS_ANTHROPIC_API_KEY=sk-ant-...
+BOOKS_CATEGORIZER_MODEL=claude-sonnet-5
+```
+
+That is not indecision. Every agent call here goes through
+`.with_structured_output()` over a fixed chart of accounts, and the failure
+mode when a model cannot hold a schema is a validation error deep in the run,
+not a clear refusal — `ChartProposal` already carries a validator for a real
+case where the whole proposal came back as a JSON *string*. Being able to run
+the same prompt against a second model is how you tell "the prompt is wrong"
+from "this model cannot do it".
+
+Both providers are built in one place, `agent/categorizer.build_chat_model()`,
+which the categorizer and the chart builder share.
 
 Two keys never leave the core service: `BOOKS_ENCRYPTION_KEY` and
 `BOOKS_TELLER_SIGNING_SECRET`. Provider access tokens are encrypted before
@@ -533,7 +575,7 @@ remote server name it explicitly with `BOOKS_TEST_DATABASE_URL`.
 If it is unreachable the database-backed tests **skip** with a message saying
 so. A skipped run is not a passing run — check the summary line.
 
-Tests never touch Teller or Anthropic: the provider is mocked at the HTTP
+Tests never touch Teller or the model provider: the provider is mocked at the HTTP
 transport level (`tests/unit/test_teller_provider.py`) and the classifier is
 injected.
 

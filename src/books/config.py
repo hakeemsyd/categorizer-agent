@@ -57,6 +57,20 @@ class Settings(BaseSettings):
     teller_signing_secret: str | None = None
 
     # --- Categorization agent ---
+    #: Which model provider the agent calls. Qwen by default; Anthropic is
+    #: kept switchable because the agent depends entirely on structured
+    #: output, and being able to A/B the same prompt across two models is how
+    #: you tell "the prompt is wrong" from "this model cannot hold the schema".
+    llm_provider: Literal["qwen", "anthropic"] = "qwen"
+
+    #: Qwen via Alibaba's DashScope, which speaks the OpenAI wire format.
+    qwen_api_key: str | None = None
+    #: Singapore by default; use https://dashscope.aliyuncs.com/compatible-mode/v1
+    #: for Beijing. The key and the endpoint are region-scoped together — a
+    #: Singapore key against the Beijing URL fails authentication, which reads
+    #: like a bad key rather than the wrong region.
+    qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
     anthropic_api_key: str | None = None
     # Only needed if anthropic_api_key is an organization-level key rather
     # than one scoped to a workspace — Anthropic then requires the caller to
@@ -64,7 +78,10 @@ class Settings(BaseSettings):
     # needs none of this; find one under console.anthropic.com's workspace
     # settings, or the workspace's own "ID" field to fill this in instead.
     anthropic_workspace_id: str | None = None
-    categorizer_model: str = "claude-sonnet-5"
+
+    #: The model to call, read against whichever provider is selected. Change
+    #: both together: "claude-sonnet-5" means nothing to DashScope.
+    categorizer_model: str = "qwen-plus"
     categorizer_actor: str = "agent:categorizer-v1"
     confidence_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
     similar_transaction_limit: int = Field(default=15, ge=0, le=100)

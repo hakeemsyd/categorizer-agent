@@ -89,7 +89,7 @@ class ChartProposer(Protocol):
 
 
 @lru_cache(maxsize=1)
-def anthropic_chart_proposer() -> ChartProposer:
+def configured_chart_proposer() -> ChartProposer:
     model = build_chat_model().with_structured_output(ChartProposal)
 
     async def propose(system: str, prompt: str) -> ChartProposal:
@@ -103,8 +103,8 @@ def anthropic_chart_proposer() -> ChartProposer:
     return propose
 
 
-async def _lazy_anthropic_proposer(system: str, prompt: str) -> ChartProposal:
-    return await anthropic_chart_proposer()(system, prompt)
+async def _lazy_proposer(system: str, prompt: str) -> ChartProposal:
+    return await configured_chart_proposer()(system, prompt)
 
 
 @dataclass
@@ -153,7 +153,7 @@ async def propose_chart(
         merchant_count=len(groups),
     )
 
-    decide = proposer or _lazy_anthropic_proposer
+    decide = proposer or _lazy_proposer
     proposal = await decide(CHART_SYSTEM_PROMPT, prompt)
     categories = _clean(proposal, existing)
 
