@@ -11,7 +11,7 @@ from books.sdk import BooksAPIError
 
 def sync(
     business: str = typer.Option(None, "--business", "-b", help="Business name or id."),
-    item: str = typer.Option(None, "--item", help="Sync just this item."),
+    connection: str = typer.Option(None, "--connection", help="Sync just this connection."),
     backfill: bool = typer.Option(
         False, "--backfill", help="Restart from the beginning of the provider's history."
     ),
@@ -46,10 +46,12 @@ def sync(
 
     try:
         with ui.client() as api:
-            # --all and --item both mean "do not scope this to one business".
-            business_id = None if (all_businesses or item) else _resolve.business_id(api, business)
+            # --all and --connection both mean "do not scope this to one business".
+            business_id = (
+                None if (all_businesses or connection) else _resolve.business_id(api, business)
+            )
             response = api.sync(
-                item_id=item,
+                connection_id=connection,
                 business_id=business_id,
                 backfill=backfill,
                 since=since_date,
@@ -60,7 +62,7 @@ def sync(
         return
 
     for result in response["results"]:
-        label = ui.short(result["item_id"], 8)
+        label = ui.short(result["connection_id"], 8)
         if result.get("queued_task_id"):
             ui.ok(f"{label}: queued ({result['queued_task_id']})")
             continue

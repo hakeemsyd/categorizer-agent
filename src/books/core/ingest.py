@@ -13,7 +13,7 @@ from datetime import date
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from books.core import repository as repo
-from books.core.models import Account, Item
+from books.core.models import Account, Connection
 from books.logging import get_logger
 from books.providers.base import RawTransaction, SyncResult
 
@@ -39,17 +39,19 @@ class IngestResult:
         return self
 
 
-async def account_map(session: AsyncSession, item: Item) -> dict[str, Account]:
-    accounts = await repo.list_accounts(session, business_id=item.business_id)
+async def account_map(session: AsyncSession, connection: Connection) -> dict[str, Account]:
+    accounts = await repo.list_accounts(session, business_id=connection.business_id)
     return {
-        a.provider_account_id: a for a in accounts if a.item_id == item.id and a.provider_account_id
+        a.provider_account_id: a
+        for a in accounts
+        if a.connection_id == connection.id and a.provider_account_id
     }
 
 
 async def ingest_sync_result(
     session: AsyncSession,
     *,
-    item: Item,
+    connection: Connection,
     result: SyncResult,
     accounts: dict[str, Account],
     since: date | None = None,
@@ -71,13 +73,13 @@ async def ingest_sync_result(
             out.skipped_unknown_account += 1
             log.warning(
                 "ingest.unknown_account",
-                item_id=str(item.id),
+                connection_id=str(connection.id),
                 provider_account_id=raw.account_id,
             )
             continue
 
         transaction_id, is_new = await repo.upsert_transaction(
-            session, values=_to_values(item, account, raw)
+            session, values=_to_values(connection, account, raw)
         )
         if is_new:
             out.inserted += 1
@@ -86,15 +88,15 @@ async def ingest_sync_result(
             out.updated += 1
 
     out.removed = await repo.delete_transactions_by_provider_ids(
-        session, item_id=item.id, provider_transaction_ids=result.removed
+        session, connection_id=connection.id, provider_transaction_ids=result.removed
     )
     return out
 
 
-def _to_values(item: Item, account: Account, raw: RawTransaction) -> dict:
+def _to_values(connection: Connection, account: Account, raw: RawTransaction) -> dict:
     return {
-        "tenant_id": item.tenant_id,
-        "business_id": item.business_id,
+        "tenant_id": connection.tenant_id,
+        "business_id": connection.business_id,
         "account_id": account.id,
         "provider_transaction_id": raw.provider_transaction_id,
         "amount": raw.amount,

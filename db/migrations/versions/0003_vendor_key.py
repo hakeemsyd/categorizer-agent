@@ -1,7 +1,7 @@
 """add vendor_key for merchant grouping
 
 Revision ID: 4ec2d562d4e4
-Revises: 16f9a1588f7c
+Revises: c8bae0a73535
 Create Date: 2026-09-23 06:49:03.599520
 """
 
@@ -13,7 +13,7 @@ from alembic import op
 from books.core.vendors import normalize_vendor
 
 revision = "4ec2d562d4e4"
-down_revision = "16f9a1588f7c"
+down_revision = "c8bae0a73535"
 branch_labels = None
 depends_on = None
 

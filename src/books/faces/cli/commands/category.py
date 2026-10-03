@@ -125,7 +125,7 @@ def seed_categories(
 def bootstrap_categories(
     business: str = typer.Option(None, "--business", "-b"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Create the accounts without asking."),
-    max_merchants: int = typer.Option(120, "--max-merchants", help="Merchant groups to consider."),
+    max_merchants: int = typer.Option(60, "--max-merchants", help="Merchant groups to consider."),
 ) -> None:
     """Build a chart of accounts from the merchants already synced.
 

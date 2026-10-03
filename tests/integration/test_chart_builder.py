@@ -77,7 +77,7 @@ async def _tx(
 
 
 async def test_the_proposal_is_built_from_the_business_s_own_merchants(
-    session, business, linked_item
+    session, business, linked_connection
 ):
     """The whole reason for this step: a chart shaped by what actually landed."""
     await _tx(session, business, "AWS", day=1)
@@ -94,7 +94,7 @@ async def test_the_proposal_is_built_from_the_business_s_own_merchants(
 
 
 async def test_already_categorized_transactions_still_shape_the_chart(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """Unlike the categorization pass, this looks at everything.
 
@@ -127,7 +127,7 @@ async def test_already_categorized_transactions_still_shape_the_chart(
 
 
 async def test_money_in_and_money_out_are_shown_as_separate_sections(
-    session, business, linked_item
+    session, business, linked_connection
 ):
     """The mistake this prevents was a real one, not a hypothetical.
 
@@ -149,7 +149,7 @@ async def test_money_in_and_money_out_are_shown_as_separate_sections(
 
 
 async def test_existing_accounts_are_shown_so_they_are_not_proposed_again(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     await _tx(session, business, "AWS")
     await session.commit()
@@ -173,7 +173,7 @@ async def test_a_business_with_nothing_synced_is_told_to_sync_first(session, bus
 
 
 async def test_a_name_the_business_already_has_is_never_proposed(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """Asking the model for gaps is not the same as enforcing it.
 
@@ -191,7 +191,7 @@ async def test_a_name_the_business_already_has_is_never_proposed(
     assert [p.name for p in proposed] == ["Meals & Entertainment"]
 
 
-async def test_a_repeated_proposal_is_only_created_once(session, business, linked_item):
+async def test_a_repeated_proposal_is_only_created_once(session, business, linked_connection):
     await _tx(session, business, "AWS")
     await session.commit()
 
@@ -200,7 +200,7 @@ async def test_a_repeated_proposal_is_only_created_once(session, business, linke
     assert [c.name for c in result.created] == ["Travel"]
 
 
-async def test_proposing_writes_nothing(session, business, linked_item):
+async def test_proposing_writes_nothing(session, business, linked_connection):
     """The default has to be safe: a chart appears only when someone says so."""
     await _tx(session, business, "AWS")
     await session.commit()
@@ -212,7 +212,7 @@ async def test_proposing_writes_nothing(session, business, linked_item):
     assert await repo.list_categories(session, business_id=business.id) == []
 
 
-async def test_applying_creates_the_accounts_with_their_types(session, business, linked_item):
+async def test_applying_creates_the_accounts_with_their_types(session, business, linked_connection):
     await _tx(session, business, "AWS")
     await session.commit()
 
@@ -240,7 +240,7 @@ async def test_applying_creates_the_accounts_with_their_types(session, business,
     assert result.merchants_seen == 1
 
 
-async def test_applying_twice_keeps_the_first_chart(session, business, linked_item):
+async def test_applying_twice_keeps_the_first_chart(session, business, linked_connection):
     """Re-running is a normal thing to do after a later sync."""
     await _tx(session, business, "AWS")
     await session.commit()
@@ -256,7 +256,9 @@ async def test_applying_twice_keeps_the_first_chart(session, business, linked_it
     assert [r.name for r in rows] == ["Travel"]
 
 
-async def test_applying_an_edited_proposal_creates_exactly_that(session, business, linked_item):
+async def test_applying_an_edited_proposal_creates_exactly_that(
+    session, business, linked_connection
+):
     """What a human approved is what gets written — not a second opinion."""
     await _tx(session, business, "AWS")
     await session.commit()
@@ -270,7 +272,7 @@ async def test_applying_an_edited_proposal_creates_exactly_that(session, busines
 
 
 async def test_categorizing_before_the_chart_exists_says_which_command_to_run(
-    session, business, linked_item
+    session, business, linked_connection
 ):
     await _tx(session, business, "AWS")
     await session.commit()
@@ -279,7 +281,9 @@ async def test_categorizing_before_the_chart_exists_says_which_command_to_run(
         await bootstrap_business(session, business_id=business.id)
 
 
-async def test_the_chart_it_builds_is_one_the_categorizer_can_use(session, business, linked_item):
+async def test_the_chart_it_builds_is_one_the_categorizer_can_use(
+    session, business, linked_connection
+):
     """The two steps have to meet: step one's names are step two's only options."""
     await _tx(session, business, "AWS", day=1)
     await _tx(session, business, "Delta", day=2)

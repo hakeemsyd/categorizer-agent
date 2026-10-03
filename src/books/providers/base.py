@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
@@ -12,8 +12,8 @@ from books.core.accounting import AccountType
 # Normalized webhook event types. Adapters map vendor-specific codes onto these
 # so core code never branches on a vendor's vocabulary.
 EVENT_SYNC_AVAILABLE = "sync_available"
-EVENT_ITEM_ERROR = "item_error"
-EVENT_ITEM_REVOKED = "item_revoked"
+EVENT_ITEM_ERROR = "connection_error"
+EVENT_ITEM_REVOKED = "connection_revoked"
 EVENT_UNKNOWN = "unknown"
 
 
@@ -24,10 +24,39 @@ class LinkToken:
 
 
 @dataclass(frozen=True)
+class TokenSet:
+    """What an OAuth provider hands back, and what must be stored.
+
+    ``refresh_token`` is not optional bookkeeping for providers that rotate it:
+    Fintable issues a new one on every refresh and invalidates the old, so
+    losing a rotation costs the connection outright — the only recovery is
+    sending a human back through the browser. Anything holding one of these
+    must persist it before using the access token beside it.
+    """
+
+    access_token: str  # encrypted before storage, never logged
+    refresh_token: str | None = None
+    expires_at: datetime | None = None
+
+    @property
+    def expires_soon(self) -> bool:
+        """True with a minute of headroom, so a sync does not die mid-page."""
+        if self.expires_at is None:
+            return False
+        return self.expires_at <= datetime.now(tz=UTC) + timedelta(seconds=60)
+
+
+@dataclass(frozen=True)
 class ItemCredentials:
-    provider_item_id: str
+    provider_ref: str
     access_token: str  # encrypted before storage, never logged
     institution_name: str
+    refresh_token: str | None = None
+    expires_at: datetime | None = None
+
+    @property
+    def tokens(self) -> TokenSet:
+        return TokenSet(self.access_token, self.refresh_token, self.expires_at)
 
 
 @dataclass(frozen=True)
@@ -63,7 +92,7 @@ class SyncResult:
 
 @dataclass(frozen=True)
 class WebhookEvent:
-    provider_item_id: str
+    provider_ref: str
     event_type: str  # one of the EVENT_* constants above
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -87,3 +116,16 @@ class TransactionProvider(Protocol):
     def parse_webhook(self, body: dict[str, Any]) -> WebhookEvent: ...
 
     def force_refresh(self, access_token: str) -> None: ...
+
+
+@runtime_checkable
+class OAuthProvider(Protocol):
+    """A provider whose access tokens expire and must be renewed.
+
+    Separate from TransactionProvider because renewal is not every provider's
+    problem, and because the *core* drives it: core.sync refreshes, persists
+    and commits before it calls anything here with the result. Providers stay
+    stateless HTTP adapters that never reach for the database.
+    """
+
+    def refresh_tokens(self, refresh_token: str) -> TokenSet: ...

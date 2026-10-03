@@ -104,7 +104,7 @@ DEFAULT_CHART: tuple[SeedCategory, ...] = (
     SeedCategory(
         "Office Supplies",
         AccountType.EXPENSE,
-        "Consumables and small items: stationery, coffee, cables, furniture.",
+        "Consumables and small connections: stationery, coffee, cables, furniture.",
     ),
     SeedCategory(
         "Equipment & Hardware",

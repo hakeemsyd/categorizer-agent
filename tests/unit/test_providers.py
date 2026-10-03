@@ -24,7 +24,7 @@ PROTOCOL_METHODS = [
 ]
 
 
-@pytest.mark.parametrize("provider_name", ["teller", "fake"])
+@pytest.mark.parametrize("provider_name", ["fintable", "fake"])
 def test_every_registered_provider_implements_the_protocol(provider_name: str) -> None:
     provider = get_provider(provider_name)
     assert isinstance(provider, TransactionProvider)
@@ -32,7 +32,7 @@ def test_every_registered_provider_implements_the_protocol(provider_name: str) -
         assert callable(getattr(provider, method)), f"{provider_name} is missing {method}"
 
 
-@pytest.mark.parametrize("provider_name", ["teller", "fake"])
+@pytest.mark.parametrize("provider_name", ["fintable", "fake"])
 def test_signatures_match_the_protocol(provider_name: str) -> None:
     provider = get_provider(provider_name)
     for method in PROTOCOL_METHODS:
@@ -49,7 +49,7 @@ def test_unknown_provider_is_a_configuration_error() -> None:
 
 
 def test_registry_lists_what_is_available() -> None:
-    assert {"teller", "fake"} <= set(available_providers())
+    assert {"fintable", "fake"} <= set(available_providers())
 
 
 def test_fake_provider_paginates_by_cursor() -> None:

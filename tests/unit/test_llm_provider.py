@@ -65,7 +65,7 @@ def test_qwen_is_built_against_the_configured_dashscope_endpoint(monkeypatch) ->
 
     assert model.model_name == "qwen-plus"
     assert "dashscope" in str(model.openai_api_base)
-    # Every task picks one item from a fixed list; sampling variety is a
+    # Every task picks one connection from a fixed list; sampling variety is a
     # liability there, not a feature.
     assert model.temperature == 0
 
@@ -90,12 +90,14 @@ def test_anthropic_is_still_reachable_by_configuration(monkeypatch) -> None:
     assert type(model).__name__ == "ChatAnthropic"
 
 
-def test_a_missing_qwen_key_names_the_variable_and_the_region_trap(monkeypatch) -> None:
+def test_a_missing_qwen_key_names_the_variable_and_the_host_trap(monkeypatch) -> None:
     monkeypatch.delenv("BOOKS_QWEN_API_KEY", raising=False)
     with pytest.raises(ConfigurationError) as exc:
         build_chat_model()
     assert "BOOKS_QWEN_API_KEY" in str(exc.value)
-    assert "region" in str(exc.value)
+    # The key and the endpoint belong together — a key from one host against
+    # another reads as an auth failure rather than a misconfiguration.
+    assert "BOOKS_QWEN_BASE_URL" in str(exc.value)
 
 
 def test_a_missing_anthropic_key_says_which_provider_asked_for_it(monkeypatch) -> None:

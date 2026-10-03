@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, cast
 
@@ -25,7 +25,7 @@ from books.core.models import (
     Business,
     CategorizationHistory,
     Category,
-    Item,
+    Connection,
     Rule,
     Tenant,
     Transaction,
@@ -214,73 +214,82 @@ async def find_category_by_name(
     )
 
 
-# --- items --------------------------------------------------------------
+# --- connections --------------------------------------------------------------
 
 
-async def create_item(
+async def create_connection(
     session: AsyncSession,
     *,
     business: Business,
     provider: str,
-    provider_item_id: str,
+    provider_ref: str,
     access_token_encrypted: str,
+    refresh_token_encrypted: str | None = None,
+    token_expires_at: datetime | None = None,
     institution_name: str | None = None,
     backfill_start_date: date | None = None,
-) -> Item:
-    item = Item(
+) -> Connection:
+    connection = Connection(
         tenant_id=business.tenant_id,
         business_id=business.id,
         provider=provider,
-        provider_item_id=provider_item_id,
+        provider_ref=provider_ref,
         access_token_encrypted=access_token_encrypted,
+        refresh_token_encrypted=refresh_token_encrypted,
+        token_expires_at=token_expires_at,
         institution_name=institution_name,
         backfill_start_date=backfill_start_date,
     )
-    session.add(item)
+    session.add(connection)
     await session.flush()
-    return item
+    return connection
 
 
-async def get_item(session: AsyncSession, item_id: uuid.UUID) -> Item:
-    item = await session.get(Item, item_id)
-    if item is None:
-        raise NotFoundError(f"Item {item_id} not found")
-    return item
+async def get_connection(session: AsyncSession, connection_id: uuid.UUID) -> Connection:
+    connection = await session.get(Connection, connection_id)
+    if connection is None:
+        raise NotFoundError(f"Connection {connection_id} not found")
+    return connection
 
 
-async def get_item_by_provider_id(
-    session: AsyncSession, *, provider: str, provider_item_id: str
-) -> Item | None:
+async def get_connection_by_provider_ref(
+    session: AsyncSession, *, provider: str, provider_ref: str
+) -> Connection | None:
     return await session.scalar(
-        select(Item).where(Item.provider == provider, Item.provider_item_id == provider_item_id)
+        select(Connection).where(
+            Connection.provider == provider, Connection.provider_ref == provider_ref
+        )
     )
 
 
-async def list_items(
+async def list_connections(
     session: AsyncSession, *, business_id: uuid.UUID | None = None, active_only: bool = False
-) -> Sequence[Item]:
-    stmt = select(Item).order_by(Item.created_at)
+) -> Sequence[Connection]:
+    stmt = select(Connection).order_by(Connection.created_at)
     if business_id:
-        stmt = stmt.where(Item.business_id == business_id)
+        stmt = stmt.where(Connection.business_id == business_id)
     if active_only:
-        stmt = stmt.where(Item.status == "active")
+        stmt = stmt.where(Connection.status == "active")
     return (await session.scalars(stmt)).all()
 
 
 # --- accounts -----------------------------------------------------------
 
 
-async def upsert_account(session: AsyncSession, *, item: Item, raw: RawAccount) -> Account:
+async def upsert_account(
+    session: AsyncSession, *, connection: Connection, raw: RawAccount
+) -> Account:
     account = await session.scalar(
         select(Account).where(
-            Account.item_id == item.id, Account.provider_account_id == raw.provider_account_id
+            Account.connection_id == connection.id,
+            Account.provider_account_id == raw.provider_account_id,
         )
     )
     if account is None:
         account = Account(
-            tenant_id=item.tenant_id,
-            business_id=item.business_id,
-            item_id=item.id,
+            tenant_id=connection.tenant_id,
+            business_id=connection.business_id,
+            connection_id=connection.id,
             provider_account_id=raw.provider_account_id,
         )
         session.add(account)
@@ -422,11 +431,11 @@ async def upsert_transaction(session: AsyncSession, *, values: dict) -> tuple[uu
 
 
 async def delete_transactions_by_provider_ids(
-    session: AsyncSession, *, item_id: uuid.UUID, provider_transaction_ids: Sequence[str]
+    session: AsyncSession, *, connection_id: uuid.UUID, provider_transaction_ids: Sequence[str]
 ) -> int:
     if not provider_transaction_ids:
         return 0
-    account_ids = select(Account.id).where(Account.item_id == item_id)
+    account_ids = select(Account.id).where(Account.connection_id == connection_id)
     result = cast(
         CursorResult,
         await session.execute(

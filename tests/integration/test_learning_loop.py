@@ -74,7 +74,7 @@ async def _tx(session, business, vendor: str, amount: str = "-10.00", day: int =
 
 
 async def test_bootstrap_decides_once_per_merchant_not_once_per_transaction(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """The point of the vendor-first pass: fewer calls, consistent answers."""
     for day in range(1, 4):
@@ -94,7 +94,7 @@ async def test_bootstrap_decides_once_per_merchant_not_once_per_transaction(
 
 
 async def test_bootstrap_gives_every_transaction_from_one_merchant_the_same_category(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     for day in range(1, 4):
         await _tx(session, business, "AWS", day=day)
@@ -115,7 +115,7 @@ async def test_bootstrap_gives_every_transaction_from_one_merchant_the_same_cate
 
 
 async def test_bootstrap_leaves_everything_unreviewed(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """It is still the model's opinion — it must not claim human approval."""
     await _tx(session, business, "AWS")
@@ -134,7 +134,7 @@ async def test_bootstrap_leaves_everything_unreviewed(
 
 
 async def test_bootstrap_skips_a_merchant_it_cannot_place(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """An invented category is refused here exactly as in the single-row path."""
     await _tx(session, business, "MYSTERY CO")
@@ -156,7 +156,7 @@ async def test_bootstrap_skips_a_merchant_it_cannot_place(
 
 
 async def test_bootstrap_uses_a_standing_rule_instead_of_paying_for_a_call(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     await repo.create_rule(
         session,
@@ -175,7 +175,7 @@ async def test_bootstrap_uses_a_standing_rule_instead_of_paying_for_a_call(
     assert result.transactions_categorized == 1
 
 
-async def test_bootstrap_without_a_chart_of_accounts_says_so(session, business, linked_item):
+async def test_bootstrap_without_a_chart_of_accounts_says_so(session, business, linked_connection):
     await _tx(session, business, "AWS")
     await session.commit()
 
@@ -186,7 +186,7 @@ async def test_bootstrap_without_a_chart_of_accounts_says_so(session, business, 
 
 
 async def test_bootstrap_ignores_rows_with_no_identifiable_merchant(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """A bare wire has nothing to generalize from — leave it to the row path."""
     account = (await repo.list_accounts(session, business_id=business.id))[0]
@@ -217,7 +217,7 @@ async def test_bootstrap_ignores_rows_with_no_identifiable_merchant(
 
 
 async def test_a_human_correction_reaches_the_prompt_as_a_correction(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """The strongest signal available: what the agent got wrong, and the fix."""
     wrong = await _tx(session, business, "AWS", day=1)
@@ -248,7 +248,7 @@ async def test_a_human_correction_reaches_the_prompt_as_a_correction(
 
 
 async def test_the_prompt_separates_verified_examples_from_the_agents_own_guesses(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     guessed = await _tx(session, business, "AWS", day=1)
     await apply_category(
@@ -269,7 +269,7 @@ async def test_the_prompt_separates_verified_examples_from_the_agents_own_guesse
 
 
 async def test_examples_are_matched_on_the_merchant_not_the_payment_rail(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """Regression: matching the description's first word pulled in every wire.
 
@@ -315,7 +315,7 @@ async def test_examples_are_matched_on_the_merchant_not_the_payment_rail(
 
 
 async def test_correcting_one_row_fixes_the_others_from_that_merchant(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     rows = [await _tx(session, business, "AWS", day=d) for d in range(1, 4)]
     for row in rows:
@@ -345,7 +345,7 @@ async def test_correcting_one_row_fixes_the_others_from_that_merchant(
 
 
 async def test_propagation_never_overwrites_another_humans_decision(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     first = await _tx(session, business, "AWS", day=1)
     deliberate = await _tx(session, business, "AWS", day=2)
@@ -375,7 +375,7 @@ async def test_propagation_never_overwrites_another_humans_decision(
 
 
 async def test_propagation_stops_at_the_merchant_boundary(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     aws = await _tx(session, business, "AWS", day=1)
     delta = await _tx(session, business, "Delta", day=1)
@@ -402,7 +402,7 @@ async def test_propagation_stops_at_the_merchant_boundary(
 
 
 async def test_propagated_rows_are_attributed_honestly(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """The human never saw these rows — history must not imply they did."""
     first = await _tx(session, business, "AWS", day=1)
@@ -425,7 +425,7 @@ async def test_propagated_rows_are_attributed_honestly(
 
 
 async def test_propagation_is_a_no_op_when_the_merchant_has_one_transaction(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     only = await _tx(session, business, "AWS")
     await apply_category(
@@ -463,7 +463,7 @@ async def _tx_desc(session, business, vendor, description, amount, day=1) -> Tra
 
 
 async def test_a_correction_does_not_cross_a_direction_flip(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """Regression, from real data: SAM BLOCK is 4 payments out and 1 in.
 
@@ -492,7 +492,7 @@ async def test_a_correction_does_not_cross_a_direction_flip(
 
 
 async def test_a_correction_does_not_cross_a_different_kind_of_line(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """Regression, from real data: AMERICAN EXPRESS bills a card payment and
     interest on the same card, both money out. They are different accounts,
@@ -519,7 +519,7 @@ async def test_a_correction_does_not_cross_a_different_kind_of_line(
 
 
 async def test_a_restated_description_still_propagates_across_the_merchant(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """The narrowing must not be so strict that normal merchants stop grouping.
 
@@ -545,7 +545,7 @@ async def test_a_restated_description_still_propagates_across_the_merchant(
 
 
 async def test_bootstrap_decides_separately_for_each_kind_of_line(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """One merchant, two accounts — so two decisions, not one blurred answer."""
     await _tx_desc(

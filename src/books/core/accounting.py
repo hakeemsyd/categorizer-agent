@@ -50,22 +50,22 @@ def normal_balance(account_type: AccountType | str) -> EntrySide:
     return NORMAL_BALANCE[AccountType(account_type)]
 
 
-def entry_side_for_amount(
-    amount: Decimal | float | int, bank_account_type: AccountType | str | None
-) -> EntrySide:
+def entry_side_for_amount(amount: Decimal | float | int) -> EntrySide:
     """The side a transaction applies to its *category*.
 
-    The sign alone does not say which way money moved, because it is signed
-    from the **bank account's** point of view and a credit card is a liability
-    whose balance grows as you spend:
+    One convention, enforced at the boundary: **a negative amount is money
+    leaving the business**, whatever kind of account it sits on. Normalizing
+    to that is the provider adapter's job (see RawTransaction.amount), and it
+    has to be, because the sign a provider reports is its own choice. Teller
+    signed from the bank account's point of view, so a credit-card purchase
+    arrived positive; Fintable normalizes first, so the same purchase arrives
+    negative.
 
-    * On an asset account (checking, savings), negative is money leaving.
-    * On a liability account (a credit card), a purchase is *positive* — it
-      increases what you owe. Paying the card down is negative.
-
-    So the account's classification is part of the derivation, not a detail.
-    Reading the sign alone books every card purchase as income, which is how
-    this was found: 101 of the 110 rows on one Platinum Card were positive.
+    This function deliberately does **not** look at the account type. It used
+    to, inverting the sign for liabilities — correct for Teller, and silently
+    wrong for Fintable, where it double-inverted and booked 903 card purchases
+    as income. Account-shaped special cases belong in the one adapter that
+    needs them, not in a rule every transaction passes through.
 
     Given the direction, the category takes the opposite side from the bank
     account:
@@ -77,19 +77,8 @@ def entry_side_for_amount(
 
     A zero-amount transaction is recorded as a credit; it moves no balance
     either way.
-
-    ``bank_account_type`` is required rather than defaulted: a caller that does
-    not know the account cannot get this right, and silently assuming asset is
-    the bug this signature exists to prevent. Pass None only when the account
-    genuinely has no classification, where asset is the safe reading.
     """
-    value = Decimal(str(amount))
-    if value == 0:
-        return EntrySide.CREDIT
-    money_left_the_business = value < 0
-    if bank_account_type is not None and AccountType(bank_account_type) is AccountType.LIABILITY:
-        money_left_the_business = not money_left_the_business
-    return EntrySide.DEBIT if money_left_the_business else EntrySide.CREDIT
+    return EntrySide.DEBIT if Decimal(str(amount)) < 0 else EntrySide.CREDIT
 
 
 def increases_balance(account_type: AccountType | str, entry_side: EntrySide | str) -> bool:

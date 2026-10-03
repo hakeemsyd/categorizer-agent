@@ -1,4 +1,4 @@
-"""entry_side must account for credit cards, not just the sign
+"""derive entry_side from the amount, under one signing convention
 
 Revision ID: 9a3c71f0be25
 Revises: 4ec2d562d4e4
@@ -30,12 +30,7 @@ depends_on = None
 # the category then takes the opposite side from the bank account. Zero is a
 # credit either way, matching accounting.entry_side_for_amount.
 _CORRECT_SIDE = """
-CASE
-    WHEN a.classification = 'liability' THEN
-        CASE WHEN t.amount > 0 THEN 'debit'::entry_side ELSE 'credit'::entry_side END
-    ELSE
-        CASE WHEN t.amount < 0 THEN 'debit'::entry_side ELSE 'credit'::entry_side END
-END
+CASE WHEN t.amount < 0 THEN 'debit'::entry_side ELSE 'credit'::entry_side END
 """
 
 
@@ -53,8 +48,6 @@ def upgrade() -> None:
         f"""
         UPDATE transactions t
            SET entry_side = {_CORRECT_SIDE}
-          FROM accounts a
-         WHERE a.id = t.account_id
         """
     )
     # transaction_type mirrored the same faulty reading of the sign.

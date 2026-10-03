@@ -137,7 +137,7 @@ class FakeProvider:
 
     def exchange_public_token(self, public_token: str) -> ItemCredentials:
         return ItemCredentials(
-            provider_item_id=f"fake-item-{public_token}",
+            provider_ref=f"fake-connection-{public_token}",
             access_token=f"fake-access-{public_token}",
             institution_name=self.state.institution_name,
         )
@@ -168,7 +168,7 @@ class FakeProvider:
 
     def parse_webhook(self, body: dict[str, Any]) -> WebhookEvent:
         return WebhookEvent(
-            provider_item_id=str(body.get("item_id", "")),
+            provider_ref=str(body.get("connection_id", "")),
             event_type=str(body.get("event_type") or EVENT_SYNC_AVAILABLE) or EVENT_UNKNOWN,
             raw=body,
         )

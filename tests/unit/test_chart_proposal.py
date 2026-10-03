@@ -18,7 +18,7 @@ ONE = {"name": "Travel", "account_type": "expense", "description": "Flights and 
 
 
 def test_a_normal_proposal_parses() -> None:
-    proposal = ChartProposal(categories=[ONE])  # type: ignore[list-item]
+    proposal = ChartProposal(categories=[ONE])  # type: ignore[list-connection]
     assert proposal.categories[0].name == "Travel"
 
 

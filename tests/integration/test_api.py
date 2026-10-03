@@ -26,33 +26,37 @@ async def test_endpoints_require_the_bearer_token(api_client):
     assert response.status_code == 401
 
 
-async def test_webhooks_do_not_require_the_bearer_token(api_client, linked_item, dispatcher):
+async def test_webhooks_do_not_require_the_bearer_token(api_client, linked_connection, dispatcher):
     """Providers authenticate by signature, not by our shared secret."""
     response = await api_client.post(
-        f"/webhooks/{linked_item.provider}",
-        json={"item_id": linked_item.provider_item_id, "event_type": "sync_available"},
+        f"/webhooks/{linked_connection.provider}",
+        json={"connection_id": linked_connection.provider_ref, "event_type": "sync_available"},
         headers={"Authorization": ""},
     )
     assert response.status_code == 200
     assert response.json()["detail"] == "Sync queued"
-    assert [name for name, _ in dispatcher.calls] == ["sync_item"]
+    assert [name for name, _ in dispatcher.calls] == ["sync_connection"]
 
 
-async def test_webhook_for_an_unknown_item_is_acknowledged_not_errored(api_client, dispatcher):
-    response = await api_client.post("/webhooks/fake", json={"item_id": "nope"})
+async def test_webhook_for_an_unknown_connection_is_acknowledged_not_errored(
+    api_client, dispatcher
+):
+    response = await api_client.post("/webhooks/fake", json={"connection_id": "nope"})
     assert response.status_code == 200
-    assert "Unknown item" in response.json()["detail"]
+    assert "Unknown connection" in response.json()["detail"]
     assert dispatcher.calls == []
 
 
-async def test_item_error_webhook_marks_the_item(api_client, session, linked_item):
+async def test_connection_error_webhook_marks_the_connection(
+    api_client, session, linked_connection
+):
     response = await api_client.post(
         "/webhooks/fake",
-        json={"item_id": linked_item.provider_item_id, "event_type": "item_error"},
+        json={"connection_id": linked_connection.provider_ref, "event_type": "connection_error"},
     )
     assert response.status_code == 200
     # Same session, so the route's mutation is visible on the identity-mapped row.
-    assert linked_item.status == "error"
+    assert linked_connection.status == "error"
 
 
 async def test_missing_row_maps_to_404(api_client):
@@ -61,60 +65,65 @@ async def test_missing_row_maps_to_404(api_client):
     assert response.json()["error"] == "NotFoundError"
 
 
-async def test_sync_queues_by_default_and_runs_inline_on_wait(api_client, linked_item, dispatcher):
-    queued = await api_client.post("/sync", json={"item_id": str(linked_item.id)})
+async def test_sync_queues_by_default_and_runs_inline_on_wait(
+    api_client, linked_connection, dispatcher
+):
+    queued = await api_client.post("/sync", json={"connection_id": str(linked_connection.id)})
     assert queued.status_code == 200
-    assert [name for name, _ in dispatcher.calls] == ["sync_item"]
+    assert [name for name, _ in dispatcher.calls] == ["sync_connection"]
 
     dispatcher.calls.clear()
-    inline = await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+    inline = await api_client.post(
+        "/sync", json={"connection_id": str(linked_connection.id), "wait": True}
+    )
     body = inline.json()["results"][0]
     assert body["inserted"] == 5
     # Every newly ingested transaction is queued for categorization (plan.md §5.5).
     assert [name for name, _ in dispatcher.calls] == ["categorize_transaction"] * 5
 
 
-async def test_transaction_filters(api_client, linked_item):
-    await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+async def test_transaction_filters(api_client, linked_connection):
+    await api_client.post("/sync", json={"connection_id": str(linked_connection.id), "wait": True})
 
     everything = await api_client.get(
-        "/transactions", params={"business_id": str(linked_item.business_id)}
+        "/transactions", params={"business_id": str(linked_connection.business_id)}
     )
     assert everything.json()["total"] == 5
 
     uncategorized = await api_client.get(
         "/transactions",
-        params={"business_id": str(linked_item.business_id), "uncategorized": True},
+        params={"business_id": str(linked_connection.business_id), "uncategorized": True},
     )
     assert uncategorized.json()["total"] == 5
 
     searched = await api_client.get(
-        "/transactions", params={"business_id": str(linked_item.business_id), "search": "gusto"}
+        "/transactions",
+        params={"business_id": str(linked_connection.business_id), "search": "gusto"},
     )
     assert searched.json()["total"] == 1
-    assert searched.json()["items"][0]["vendor"] == "Gusto"
+    assert searched.json()["connections"][0]["vendor"] == "Gusto"
 
     not_reviewed = await api_client.get(
         "/transactions",
-        params={"business_id": str(linked_item.business_id), "reviewed": False},
+        params={"business_id": str(linked_connection.business_id), "reviewed": False},
     )
     assert not_reviewed.json()["total"] == 5  # nothing has been reviewed yet
 
     reviewed = await api_client.get(
         "/transactions",
-        params={"business_id": str(linked_item.business_id), "reviewed": True},
+        params={"business_id": str(linked_connection.business_id), "reviewed": True},
     )
     assert reviewed.json()["total"] == 0
 
 
 async def test_recategorize_by_name_marks_reviewed_and_records_the_actor(
-    api_client, session, business, chart_of_accounts, linked_item
+    api_client, session, business, chart_of_accounts, linked_connection
 ):
-    await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+    await api_client.post("/sync", json={"connection_id": str(linked_connection.id), "wait": True})
     page = await api_client.get(
         "/transactions", params={"business_id": str(business.id), "search": "aws"}
     )
-    transaction_id = page.json()["items"][0]["id"]
+    transaction_id = page.json()["connections"][0]["id"]
 
     response = await api_client.post(
         f"/transactions/{transaction_id}/recategorize",
@@ -131,11 +140,11 @@ async def test_recategorize_by_name_marks_reviewed_and_records_the_actor(
 
 
 async def test_recategorize_to_an_unknown_category_is_rejected(
-    api_client, business, chart_of_accounts, linked_item
+    api_client, business, chart_of_accounts, linked_connection
 ):
-    await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+    await api_client.post("/sync", json={"connection_id": str(linked_connection.id), "wait": True})
     page = await api_client.get("/transactions", params={"business_id": str(business.id)})
-    transaction_id = page.json()["items"][0]["id"]
+    transaction_id = page.json()["connections"][0]["id"]
 
     response = await api_client.post(
         f"/transactions/{transaction_id}/recategorize",
@@ -146,11 +155,11 @@ async def test_recategorize_to_an_unknown_category_is_rejected(
 
 
 async def test_categorize_refuses_an_already_reviewed_transaction_without_force(
-    api_client, business, chart_of_accounts, linked_item
+    api_client, business, chart_of_accounts, linked_connection
 ):
-    await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+    await api_client.post("/sync", json={"connection_id": str(linked_connection.id), "wait": True})
     page = await api_client.get("/transactions", params={"business_id": str(business.id)})
-    transaction_id = next(t["id"] for t in page.json()["items"] if t["vendor"] == "AWS")
+    transaction_id = next(t["id"] for t in page.json()["connections"] if t["vendor"] == "AWS")
     await api_client.post(
         f"/transactions/{transaction_id}/recategorize",
         json={"category_name": "Payroll", "actor": "cli:hakeem"},
@@ -181,11 +190,11 @@ async def test_categorize_refuses_an_already_reviewed_transaction_without_force(
 
 
 async def test_categorize_batch_skips_reviewed_rows_by_default(
-    api_client, business, chart_of_accounts, linked_item, dispatcher
+    api_client, business, chart_of_accounts, linked_connection, dispatcher
 ):
-    await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+    await api_client.post("/sync", json={"connection_id": str(linked_connection.id), "wait": True})
     page = await api_client.get("/transactions", params={"business_id": str(business.id)})
-    transactions = page.json()["items"]
+    transactions = page.json()["connections"]
     assert len(transactions) == 5
 
     # Review one of them; it must be excluded from the default batch scope.
@@ -210,11 +219,11 @@ async def test_categorize_batch_skips_reviewed_rows_by_default(
 
 
 async def test_categorize_batch_include_reviewed_forces_every_matched_row(
-    api_client, business, chart_of_accounts, linked_item, dispatcher
+    api_client, business, chart_of_accounts, linked_connection, dispatcher
 ):
-    await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+    await api_client.post("/sync", json={"connection_id": str(linked_connection.id), "wait": True})
     page = await api_client.get("/transactions", params={"business_id": str(business.id)})
-    transactions = page.json()["items"]
+    transactions = page.json()["connections"]
 
     await api_client.post(
         f"/transactions/{transactions[0]['id']}/recategorize",
@@ -231,11 +240,11 @@ async def test_categorize_batch_include_reviewed_forces_every_matched_row(
 
 
 async def test_categorize_batch_filters_by_category_name(
-    api_client, business, chart_of_accounts, linked_item, dispatcher
+    api_client, business, chart_of_accounts, linked_connection, dispatcher
 ):
-    await api_client.post("/sync", json={"item_id": str(linked_item.id), "wait": True})
+    await api_client.post("/sync", json={"connection_id": str(linked_connection.id), "wait": True})
     page = await api_client.get("/transactions", params={"business_id": str(business.id)})
-    transaction_id = next(t["id"] for t in page.json()["items"] if t["vendor"] == "AWS")
+    transaction_id = next(t["id"] for t in page.json()["connections"] if t["vendor"] == "AWS")
     await api_client.post(
         f"/transactions/{transaction_id}/recategorize",
         json={"category_name": "Software & Subscriptions", "actor": "cli:hakeem"},
@@ -254,7 +263,7 @@ async def test_categorize_batch_filters_by_category_name(
 
 
 async def test_categorize_batch_rejects_an_unknown_category_name(
-    api_client, business, chart_of_accounts, linked_item
+    api_client, business, chart_of_accounts, linked_connection
 ):
     response = await api_client.post(
         "/transactions/categorize-batch",
@@ -309,7 +318,7 @@ async def test_category_and_rule_lifecycle(api_client, business):
 
 
 async def test_archiving_a_category_keeps_it_out_of_the_default_list(
-    api_client, business, session, linked_item
+    api_client, business, session, linked_connection
 ):
     created = await api_client.post(
         f"/businesses/{business.id}/categories",

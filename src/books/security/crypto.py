@@ -40,7 +40,7 @@ def decrypt(ciphertext: str) -> str:
     except InvalidToken as exc:
         raise ConfigurationError(
             "Stored access token could not be decrypted. The BOOKS_ENCRYPTION_KEY "
-            "likely differs from the one used when the item was linked."
+            "likely differs from the one used when the connection was linked."
         ) from exc
 
 

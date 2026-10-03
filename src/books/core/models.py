@@ -144,10 +144,10 @@ class Category(Base):
     )
 
 
-class Item(Base):
-    """One provider connection (an enrollment/item, in the aggregator's own terms)."""
+class Connection(Base):
+    """One provider connection (an enrollment/connection, in the aggregator's own terms)."""
 
-    __tablename__ = "items"
+    __tablename__ = "connections"
 
     id: Mapped[uuid.UUID] = _pk()
     tenant_id: Mapped[uuid.UUID] = mapped_column(
@@ -156,13 +156,20 @@ class Item(Base):
     business_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
-    # Per-item, not global, so more than one aggregator can be in use at once.
+    # Per-connection, not global, so more than one aggregator can be in use at once.
     # No server default on purpose: every insert path sets this explicitly
-    # (repo.create_item), and a stored default just goes stale the next time
+    # (repo.create_connection), and a stored default just goes stale the next time
     # the active provider changes — which is exactly what happened here.
     provider: Mapped[str] = mapped_column(Text, nullable=False)
-    provider_item_id: Mapped[str | None] = mapped_column(Text)
+    provider_ref: Mapped[str | None] = mapped_column(Text)
     access_token_encrypted: Mapped[str | None] = mapped_column(Text)
+    # OAuth providers only. Fintable rotates the refresh token on every use and
+    # invalidates the old one, so this column is the connection: lose a
+    # rotation and the only way back is a human in a browser. core.sync writes
+    # it and commits before the matching access token is used for anything.
+    refresh_token_encrypted: Mapped[str | None] = mapped_column(Text)
+    #: When access_token_encrypted stops working. Null means it does not expire.
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cursor: Mapped[str | None] = mapped_column(Text)
     institution_name: Mapped[str | None] = mapped_column(Text)
     backfill_start_date: Mapped[dt.date | None] = mapped_column(Date)
@@ -172,9 +179,11 @@ class Item(Base):
     created_at: Mapped[datetime] = _created_at()
 
     __table_args__ = (
-        UniqueConstraint("provider", "provider_item_id", name="uq_items_provider_item"),
-        CheckConstraint("status IN ('active','error','disconnected')", name="ck_items_status"),
-        Index("ix_items_business", "business_id"),
+        UniqueConstraint("provider", "provider_ref", name="uq_connections_provider_ref"),
+        CheckConstraint(
+            "status IN ('active','error','disconnected')", name="ck_connections_status"
+        ),
+        Index("ix_connections_business", "business_id"),
     )
 
 
@@ -188,8 +197,8 @@ class Account(Base):
     business_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
-    item_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("items.id", ondelete="CASCADE")
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connections.id", ondelete="CASCADE")
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     provider_account_id: Mapped[str | None] = mapped_column(Text)
@@ -206,7 +215,9 @@ class Account(Base):
             "classification IS NULL OR classification IN ('asset','liability')",
             name="ck_accounts_classification",
         ),
-        UniqueConstraint("item_id", "provider_account_id", name="uq_accounts_item_provider"),
+        UniqueConstraint(
+            "connection_id", "provider_account_id", name="uq_accounts_connection_provider"
+        ),
         Index("ix_accounts_business", "business_id"),
     )
 
@@ -359,26 +370,18 @@ class Rule(Base):
 # — worth it for a column the books balance on.
 ENTRY_SIDE_FUNCTION = """
 CREATE OR REPLACE FUNCTION transactions_set_entry_side() RETURNS trigger AS $$
-DECLARE
-    bank_account_type account_type;
 BEGIN
-    SELECT a.classification INTO bank_account_type
-      FROM accounts a WHERE a.id = NEW.account_id;
+    -- One convention, and the account type is deliberately not consulted:
+    -- a negative amount is money leaving the business, on a checking account
+    -- and a credit card alike. Normalizing to that is the provider adapter's
+    -- job. This previously inverted the sign for liabilities, which matched
+    -- Teller's per-account signing and double-inverted Fintable's already
+    -- normalized amounts.
+    NEW.entry_side := CASE
+        WHEN NEW.amount < 0 THEN 'debit'::entry_side ELSE 'credit'::entry_side END;
 
-    -- A credit card is a liability: spending on it is a POSITIVE amount,
-    -- because it increases what the business owes. Everywhere else, money
-    -- leaving is negative. Either way the category takes the opposite side
-    -- from the bank account, and a zero amount is a credit.
-    IF bank_account_type = 'liability' THEN
-        NEW.entry_side := CASE
-            WHEN NEW.amount > 0 THEN 'debit'::entry_side ELSE 'credit'::entry_side END;
-    ELSE
-        NEW.entry_side := CASE
-            WHEN NEW.amount < 0 THEN 'debit'::entry_side ELSE 'credit'::entry_side END;
-    END IF;
-
-    -- A plain-text mirror of the same fact. Kept from the same source so the
-    -- two cannot disagree, as they did when each read the sign separately.
+    -- A plain-text mirror of the same fact, from the same source so the two
+    -- cannot disagree.
     NEW.transaction_type := NEW.entry_side::text;
     RETURN NEW;
 END;

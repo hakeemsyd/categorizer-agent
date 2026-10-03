@@ -290,16 +290,43 @@ def build_chat_model() -> Any:
 
 
 def _build_qwen(settings: Any) -> Any:
-    """Qwen through DashScope, which serves the OpenAI wire format.
+    """Qwen, which is served behind two different wire formats.
 
-    So the OpenAI client is the client here — there is no Qwen-specific SDK
-    worth taking on for a chat-completions call.
+    DashScope speaks OpenAI's; other Qwen MaaS endpoints speak Anthropic's
+    Messages API. Both reach the same models, so the only thing that changes
+    is which client to hand the base URL to.
     """
     if not settings.qwen_api_key:
         raise ConfigurationError(
             "BOOKS_QWEN_API_KEY is unset — the agent cannot call the model. "
-            "Get a key from Alibaba Cloud Model Studio, and make sure it is "
-            "issued for the same region as BOOKS_QWEN_BASE_URL."
+            "Make sure the key is issued for the same host as BOOKS_QWEN_BASE_URL."
+        )
+
+    if settings.qwen_api_style == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(
+            model_name=settings.categorizer_model,
+            api_key=SecretStr(settings.qwen_api_key),
+            base_url=settings.qwen_base_url,
+            # Far above what the answer itself needs, because these models
+            # emit an extended "thinking" block first and it is charged to the
+            # same budget. At 4096 a chart over 60 merchants spent the whole
+            # allowance reasoning and returned no tool call at all — which
+            # surfaces as a schema validation error, pointing at the parser
+            # rather than at the budget that actually ran out.
+            max_tokens_to_sample=32000,
+            timeout=300,
+            stop=None,
+            # Streaming is not a preference here, it is what makes these calls
+            # work at all. The MaaS gateway closes a non-streaming connection
+            # after about 60 seconds, and these models think before answering:
+            # measured against the real chart prompt, non-streaming died with
+            # a connection reset at 66s while the identical streaming request
+            # finished in 34s. The symptom is an APIConnectionError that looks
+            # like a network fault rather than a timeout, so it is worth
+            # naming here.
+            streaming=True,
         )
 
     from langchain_openai import ChatOpenAI

@@ -41,6 +41,14 @@ log = get_logger(__name__)
 # one, and almost certainly means the model split hairs it should not have.
 MAX_PROPOSED = 60
 
+#: How many merchant groups to show the model, busiest first. Not a quality
+#: ceiling but a practical one: the whole chart is proposed in a single call,
+#: and a reasoning model's thinking grows with the list. At 60 groups the real
+#: data took four minutes; at 150 it ran past a five-minute read timeout. The
+#: tail is mostly one-off merchants that would not justify their own account
+#: anyway, and the model is told the true total regardless.
+DEFAULT_MAX_MERCHANTS = 60
+
 
 class ProposedCategory(BaseModel):
     """One account the model thinks this business needs."""
@@ -124,7 +132,7 @@ async def propose_chart(
     *,
     business_id: uuid.UUID,
     proposer: ChartProposer | None = None,
-    max_merchants: int = 120,
+    max_merchants: int = DEFAULT_MAX_MERCHANTS,
 ) -> tuple[Business, list[ProposedCategory], int]:
     """Ask the model what accounts this business's transactions need.
 
@@ -199,7 +207,7 @@ async def build_chart(
     business_id: uuid.UUID,
     proposer: ChartProposer | None = None,
     apply: bool = False,
-    max_merchants: int = 120,
+    max_merchants: int = DEFAULT_MAX_MERCHANTS,
 ) -> ChartResult:
     """Propose a chart, and create it only when asked.
 

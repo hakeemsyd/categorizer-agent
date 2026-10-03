@@ -63,7 +63,7 @@ async def list_transactions(
         total=await repo.count_transactions(session, filters),
         limit=limit,
         offset=offset,
-        items=[
+        connections=[
             TransactionOut.model_validate(t) for t in await repo.list_transactions(session, filters)
         ],
     )

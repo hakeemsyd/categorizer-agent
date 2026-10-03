@@ -262,9 +262,9 @@ def create_rule(
 
 
 @mcp.tool()
-def sync_now(business_id: str | None = None, item_id: str | None = None) -> Any:
-    """Queue a transaction sync for an item, a business, or everything."""
-    return _call("sync", business_id=business_id, item_id=item_id, wait=False)
+def sync_now(business_id: str | None = None, connection_id: str | None = None) -> Any:
+    """Queue a transaction sync for an connection, a business, or everything."""
+    return _call("sync", business_id=business_id, connection_id=connection_id, wait=False)
 
 
 def main() -> None:

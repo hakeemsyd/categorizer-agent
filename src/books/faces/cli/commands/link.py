@@ -1,13 +1,20 @@
-"""``books link`` — the Teller Connect handshake, driven from the terminal.
+"""``books link`` — the Fintable OAuth 2.0 handshake, driven from the terminal.
 
-The CLI asks the core for a link token (Teller's public `application_id`),
-serves Teller Connect locally, and posts the resulting access token straight
-back to the core for exchange. Unlike Plaid, Connect hands the browser the
-real, finished access token directly in `onSuccess` — there is no separate
-public-token exchange step — but the shape of driving it from the terminal is
-otherwise identical: serve a local page, wait for its callback, hand the core
-whatever came back. The access token still never touches the CLI's own logic;
-it passes straight through to the core over one HTTP call.
+Fintable is a *public* OAuth client: there is no client secret, and the docs
+are explicit that none is ever accepted. What stands in for one is PKCE — a
+random verifier generated here, sent only as its SHA-256 hash when the browser
+is dispatched, and revealed only when the authorization code is redeemed. That
+is what stops someone who intercepts the code from using it.
+
+So the shape differs from a widget-based link in one important way: the
+verifier must stay in this process across the browser round trip, and travel
+with the code to the core. Everything else is familiar — serve a loopback page,
+wait for the redirect, hand the result to the core, which does the token swap.
+The tokens themselves never pass through the CLI's own logic.
+
+The redirect URI must match what is registered on the Fintable app exactly.
+Loopback is explicitly allowed, which is why this can work from a terminal at
+all.
 """
 
 from __future__ import annotations
@@ -18,97 +25,63 @@ import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from queue import Empty, Queue
+from urllib.parse import parse_qs, urlparse
 
 import typer
 
+from books.config import get_settings
 from books.faces.cli import console as ui
 from books.faces.cli.commands import _resolve
+from books.providers.fintable import PkceChallenge
 from books.sdk import BooksAPIError
 
 CALLBACK_HOST = "127.0.0.1"
 CALLBACK_PORT = 8420
 
-# transactions + balance is what this app needs; verify/identity aren't used.
-_PRODUCTS = ["transactions", "balance"]
-
-_PAGE = """<!doctype html>
-<html><head><meta charset="utf-8"><title>Link your bank</title>
-<script src="https://cdn.teller.io/connect/connect.js"></script>
+_DONE_PAGE = b"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Linked</title>
 <style>
  body{font:16px/1.5 -apple-system,system-ui,sans-serif;margin:0;display:grid;
-      place-items:center;height:100vh;background:#0f1115;color:#e8eaed}
+      place-connections:center;height:100vh;background:#0f1115;color:#e8eaed}
  .card{max-width:32rem;padding:2rem;text-align:center}
  .muted{color:#9aa0a6}
 </style></head>
 <body><div class="card">
-  <h1>Linking your institution…</h1>
-  <p class="muted" id="status">Opening Teller Connect.</p>
-</div>
-<script>
-  const connect = TellerConnect.setup({
-    applicationId: "__APPLICATION_ID__",
-    environment: "__ENVIRONMENT__",
-    products: __PRODUCTS__,
-    onSuccess: async (enrollment) => {
-      document.getElementById("status").textContent = "Finishing up — you can close this tab.";
-      await fetch("/callback", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({public_token: enrollment.accessToken})
-      });
-    },
-    onExit: async () => {
-      document.getElementById("status").textContent = "Cancelled. You can close this tab.";
-      await fetch("/callback", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({error: "cancelled"})
-      });
-    },
-    // Teller reports its own failures here — bad credentials, an institution
-    // that will not answer, an application/environment mismatch. Without this
-    // the browser shows a red banner and the terminal shows nothing at all,
-    // waiting out its full timeout with the one useful fact stuck on screen.
-    onFailure: async (failure) => {
-      document.getElementById("status").textContent =
-        "Could not link — see the terminal. You can close this tab.";
-      await fetch("/callback", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({error: "teller-connect-failure", failure: failure || {}})
-      });
-    }
-  });
-  connect.open();
-</script></body></html>
+  <h1>Done</h1>
+  <p class="muted">You can close this tab and return to the terminal.</p>
+</div></body></html>
 """
 
 
-def _serve(application_id: str, environment: str, results: Queue) -> HTTPServer:
-    page = (
-        _PAGE.replace("__APPLICATION_ID__", application_id)
-        .replace("__ENVIRONMENT__", environment or "sandbox")
-        .replace("__PRODUCTS__", json.dumps(_PRODUCTS))
-        .encode()
-    )
+def _callback_path() -> str:
+    """The path component of the configured redirect URI."""
+    return urlparse(get_settings().fintable_redirect_uri).path.rstrip("/")
+
+
+def _serve(results: Queue) -> HTTPServer:
+    """A one-shot loopback server for the OAuth redirect.
+
+    Only the redirect path is handled. Anything else gets a 404 rather than a
+    confusing success page, which makes a misconfigured redirect URI obvious
+    instead of looking like a hang.
+    """
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            parsed = urlparse(self.path)
+            # Accept whatever path the configured redirect URI names, so
+            # changing the registration does not silently 404 here.
+            if parsed.path.rstrip("/") != _callback_path():
+                self.send_response(404)
+                self.end_headers()
+                return
+            query = parse_qs(parsed.query)
+            results.put({k: v[0] for k, v in query.items()})
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(page)))
+            self.send_header("Content-Length", str(len(_DONE_PAGE)))
             self.end_headers()
-            self.wfile.write(page)
-
-        def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", 0))
-            try:
-                payload = json.loads(self.rfile.read(length) or b"{}")
-            except json.JSONDecodeError:
-                payload = {"error": "malformed callback"}
-            results.put(payload)
-            self.send_response(204)
-            self.end_headers()
+            self.wfile.write(_DONE_PAGE)
 
         def log_message(self, *_: object) -> None:
             """Silence the stdlib access log — the CLI does its own output."""
@@ -119,24 +92,21 @@ def _serve(application_id: str, environment: str, results: Queue) -> HTTPServer:
 
 
 def _why(payload: dict) -> str:
-    """Turn a Connect callback into something worth reading in a terminal."""
-    if payload.get("error") == "cancelled":
-        return "Cancelled in the browser."
-
-    failure = payload.get("failure") or {}
-    parts = [str(failure[k]) for k in ("type", "code", "message") if failure.get(k)]
-    if parts:
-        detail = " / ".join(parts)
-        # The sandbox rejects any password but "password", and the username
-        # chooses the scenario — worth saying, because Teller's own wording
-        # for it is a generic "unable to process your request".
-        hint = (
-            "\n  In sandbox the password must be exactly 'password'; the username "
-            "selects the scenario ('username' enrolls immediately, 'otp' and "
-            "'challenge' exercise MFA)."
-        )
-        return f"Teller Connect failed: {detail}{hint}"
-    return f"Link did not complete: {payload.get('error') or 'no access token'}"
+    """Turn an OAuth error redirect into something worth reading."""
+    error = payload.get("error", "")
+    description = payload.get("error_description", "")
+    if error == "access_denied":
+        return "Declined in the browser."
+    hints = {
+        "invalid_request": (
+            "Often the redirect URI: it must match what is registered on the "
+            "Fintable app character for character, including the port."
+        ),
+        "invalid_client": "BOOKS_FINTABLE_CLIENT_ID does not match a Fintable app.",
+        "invalid_grant": "The code was already used or expired. Try again.",
+    }
+    parts = [p for p in (error, description, hints.get(error, "")) if p]
+    return "Fintable refused the authorization: " + " / ".join(parts)
 
 
 def link(
@@ -145,11 +115,11 @@ def link(
     ),
     provider: str = typer.Option(None, "--provider", help="Defaults to BOOKS_DEFAULT_PROVIDER."),
     since: str = typer.Option(
-        None, "--since", help="Backfill boundary (YYYY-MM-DD), stored on the item."
+        None, "--since", help="Backfill boundary (YYYY-MM-DD), stored on the connection."
     ),
     timeout: int = typer.Option(300, "--timeout", help="Seconds to wait for the browser flow."),
 ) -> None:
-    """Connect a bank via Teller Connect."""
+    """Connect Fintable via OAuth 2.0."""
     backfill_start = None
     if since:
         try:
@@ -157,31 +127,72 @@ def link(
         except ValueError:
             ui.fail("--since must be YYYY-MM-DD")
 
+    # Minted here and kept here. The verifier is the secret that makes a
+    # public client safe, so it must not go anywhere until the code is
+    # redeemed — at which point it travels with the code, together, once.
+    pkce = PkceChallenge.generate()
+
     results: Queue = Queue()
     server = None
     try:
         with ui.client() as api:
             business_id = _resolve.business_id(api, business)
             token = api.create_link_token(business_id, provider)
+            if not token.get("authorize_url"):
+                ui.fail(
+                    f"Provider {token.get('provider')!r} did not return an authorization URL. "
+                    "OAuth linking needs one; check BOOKS_DEFAULT_PROVIDER."
+                )
+                return
 
-            server = _serve(token["link_token"], token.get("environment", ""), results)
-            url = f"http://{CALLBACK_HOST}:{CALLBACK_PORT}/"
-            ui.console.print(f"Opening [bold]{url}[/] — complete the flow in your browser.")
+            from urllib.parse import urlencode
+
+            url = (
+                token["authorize_url"]
+                + "?"
+                + urlencode(
+                    {
+                        "client_id": token["link_token"],
+                        "redirect_uri": token["redirect_uri"],
+                        "response_type": "code",
+                        "scope": token["scopes"],
+                        "state": pkce.state,
+                        "code_challenge": pkce.challenge,
+                        "code_challenge_method": "S256",
+                    }
+                )
+            )
+
+            server = _serve(results)
+            ui.console.print("Opening Fintable in your browser to authorize…")
+            ui.console.print(f"[dim]If nothing opens, visit:[/]\n{url}\n")
             webbrowser.open(url)
 
             try:
                 payload = results.get(timeout=timeout)
             except Empty:
-                ui.fail(f"Timed out after {timeout}s waiting for the browser flow.")
+                ui.fail(
+                    f"Timed out after {timeout}s. If the browser showed a redirect error, "
+                    f"check that {token['redirect_uri']} is registered on the Fintable app."
+                )
                 return
 
-            if payload.get("error") or not payload.get("public_token"):
+            if payload.get("error") or not payload.get("code"):
                 ui.fail(_why(payload))
                 return
 
-            item = api.exchange_public_token(
+            # Verifying state is the whole reason it was sent. Skipping it
+            # would let someone else's authorization code be swapped in.
+            if payload.get("state") != pkce.state:
+                ui.fail(
+                    "The 'state' returned by Fintable did not match the one sent. "
+                    "Discarding this response rather than redeeming it."
+                )
+                return
+
+            connection = api.exchange_public_token(
                 business_id,
-                payload["public_token"],
+                json.dumps({"code": payload["code"], "code_verifier": pkce.verifier}),
                 provider,
                 backfill_start_date=backfill_start,
             )
@@ -192,8 +203,9 @@ def link(
         if server is not None:
             server.shutdown()
 
-    ui.ok(
-        f"Linked {item.get('institution_name') or 'institution'} (item {ui.short(item['id'], 8)})"
-    )
+    name = connection.get("institution_name") or "Fintable"
+    ui.ok(f"Linked {name} (connection {ui.short(connection['id'], 8)})")
     hint = f" --since {since}" if since else ""
-    ui.console.print(f"  Next: [bold]books sync --item {item['id']} --backfill{hint}[/]")
+    ui.console.print(
+        f"  Next: [bold]books sync --connection {connection['id']} --backfill{hint}[/]"
+    )

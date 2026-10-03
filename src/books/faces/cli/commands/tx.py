@@ -60,11 +60,11 @@ def list_transactions(
         ui.handle(exc)
         return
 
-    if not page["items"]:
+    if not page["connections"]:
         ui.console.print("[dim]Nothing matches.[/]")
         return
-    ui.console.print(ui.transactions_table(page["items"], names))
-    shown = page["offset"] + len(page["items"])
+    ui.console.print(ui.transactions_table(page["connections"], names))
+    shown = page["offset"] + len(page["connections"])
     ui.console.print(f"[dim]{shown} of {page['total']}[/]")
 
 
@@ -319,10 +319,10 @@ def review(
             business_id = _resolve.business_id(api, business)
             page = api.list_transactions(business_id=business_id, needs_review=True, limit=limit)
             names = _resolve.category_names(api, business_id)
-            if not page["items"]:
+            if not page["connections"]:
                 ui.ok("Review queue is empty.")
                 return
-            _review_loop(api, business_id, page["items"], names)
+            _review_loop(api, business_id, page["connections"], names)
     except BooksAPIError as exc:
         ui.handle(exc)
 

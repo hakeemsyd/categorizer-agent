@@ -90,13 +90,15 @@ def upgrade() -> None:
         postgresql_where=sa.text("parent_category_id IS NULL"),
     )
     op.create_table(
-        "items",
+        "connections",
         sa.Column("id", sa.UUID(), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("tenant_id", sa.UUID(), nullable=False),
         sa.Column("business_id", sa.UUID(), nullable=False),
-        sa.Column("provider", sa.Text(), server_default="plaid", nullable=False),
-        sa.Column("provider_item_id", sa.Text(), nullable=True),
+        sa.Column("provider", sa.Text(), nullable=False),
+        sa.Column("provider_ref", sa.Text(), nullable=True),
         sa.Column("access_token_encrypted", sa.Text(), nullable=True),
+        sa.Column("refresh_token_encrypted", sa.Text(), nullable=True),
+        sa.Column("token_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("cursor", sa.Text(), nullable=True),
         sa.Column("institution_name", sa.Text(), nullable=True),
         sa.Column("backfill_start_date", sa.Date(), nullable=True),
@@ -109,19 +111,19 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.CheckConstraint("status IN ('active','error','disconnected')", name="ck_items_status"),
+        sa.CheckConstraint("status IN ('active','error','disconnected')", name="ck_connections_status"),
         sa.ForeignKeyConstraint(["business_id"], ["businesses.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["tenant_id"], ["tenants.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("provider", "provider_item_id", name="uq_items_provider_item"),
+        sa.UniqueConstraint("provider", "provider_ref", name="uq_connections_provider_ref"),
     )
-    op.create_index("ix_items_business", "items", ["business_id"], unique=False)
+    op.create_index("ix_connections_business", "connections", ["business_id"], unique=False)
     op.create_table(
         "accounts",
         sa.Column("id", sa.UUID(), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("tenant_id", sa.UUID(), nullable=False),
         sa.Column("business_id", sa.UUID(), nullable=False),
-        sa.Column("item_id", sa.UUID(), nullable=True),
+        sa.Column("connection_id", sa.UUID(), nullable=True),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column("provider_account_id", sa.Text(), nullable=True),
         sa.Column("account_type", sa.Text(), nullable=True),
@@ -143,10 +145,10 @@ def upgrade() -> None:
             name="ck_accounts_classification",
         ),
         sa.ForeignKeyConstraint(["business_id"], ["businesses.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["item_id"], ["items.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["connection_id"], ["connections.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["tenant_id"], ["tenants.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("item_id", "provider_account_id", name="uq_accounts_item_provider"),
+        sa.UniqueConstraint("connection_id", "provider_account_id", name="uq_accounts_connection_provider"),
     )
     op.create_index("ix_accounts_business", "accounts", ["business_id"], unique=False)
     op.create_table(
@@ -274,8 +276,8 @@ def downgrade() -> None:
     op.drop_table("rules")
     op.drop_index("ix_accounts_business", table_name="accounts")
     op.drop_table("accounts")
-    op.drop_index("ix_items_business", table_name="items")
-    op.drop_table("items")
+    op.drop_index("ix_connections_business", table_name="connections")
+    op.drop_table("connections")
     op.drop_index(
         "uq_categories_root_name",
         table_name="categories",

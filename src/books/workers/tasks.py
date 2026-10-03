@@ -16,7 +16,7 @@ from books.agent.categorizer import categorize_transaction as run_categorizer
 from books.core import repository as repo
 from books.core.db import session_scope
 from books.core.errors import BooksError, ProviderError
-from books.core.sync import sync_item as run_sync
+from books.core.sync import sync_connection as run_sync
 from books.logging import get_logger
 from books.workers.app import celery_app  # noqa: F401  (ensures app is configured)
 from books.workers.runner import run_async
@@ -25,7 +25,7 @@ log = get_logger(__name__)
 
 
 @shared_task(
-    name="books.sync_item",
+    name="books.sync_connection",
     bind=True,
     autoretry_for=(ProviderError,),
     retry_backoff=30,
@@ -33,24 +33,24 @@ log = get_logger(__name__)
     retry_jitter=True,
     max_retries=5,
 )
-def sync_item(
-    self, item_id: str, backfill: bool = False, since: str | None = None
+def sync_connection(
+    self, connection_id: str, backfill: bool = False, since: str | None = None
 ) -> dict[str, Any]:
-    """Drain one item's provider feed, then queue categorization for new rows."""
+    """Drain one connection's provider feed, then queue categorization for new rows."""
     summary = run_async(
-        _sync(uuid.UUID(item_id), backfill, date.fromisoformat(since) if since else None)
+        _sync(uuid.UUID(connection_id), backfill, date.fromisoformat(since) if since else None)
     )
     for transaction_id in summary["new_transaction_ids"]:
         categorize_transaction.delay(transaction_id)
     return summary
 
 
-async def _sync(item_id: uuid.UUID, backfill: bool, since: date | None) -> dict[str, Any]:
+async def _sync(connection_id: uuid.UUID, backfill: bool, since: date | None) -> dict[str, Any]:
     async with session_scope() as session:
-        item = await repo.get_item(session, item_id)
-        summary = await run_sync(session, item=item, backfill=backfill, since=since)
+        connection = await repo.get_connection(session, connection_id)
+        summary = await run_sync(session, connection=connection, backfill=backfill, since=since)
         return {
-            "item_id": str(summary.item_id),
+            "connection_id": str(summary.connection_id),
             "pages": summary.pages,
             "inserted": summary.inserted,
             "updated": summary.updated,
@@ -93,15 +93,18 @@ async def _categorize(transaction_id: uuid.UUID, force: bool = False) -> dict[st
         }
 
 
-@shared_task(name="books.sync_all_items")
-def sync_all_items() -> dict[str, int]:
-    item_ids = run_async(_active_item_ids())
-    for item_id in item_ids:
-        sync_item.delay(item_id)
-    log.info("sync_all_items.queued", count=len(item_ids))
-    return {"queued": len(item_ids)}
+@shared_task(name="books.sync_all_connections")
+def sync_all_connections() -> dict[str, int]:
+    connection_ids = run_async(_active_connection_ids())
+    for connection_id in connection_ids:
+        sync_connection.delay(connection_id)
+    log.info("sync_all_connections.queued", count=len(connection_ids))
+    return {"queued": len(connection_ids)}
 
 
-async def _active_item_ids() -> list[str]:
+async def _active_connection_ids() -> list[str]:
     async with session_scope() as session:
-        return [str(item.id) for item in await repo.list_items(session, active_only=True)]
+        return [
+            str(connection.id)
+            for connection in await repo.list_connections(session, active_only=True)
+        ]

@@ -95,7 +95,7 @@ class BuildChartRequest(BaseModel):
         "Send back what was proposed, so what a human approved is what gets created.",
     )
     max_merchants: int = Field(
-        default=120, ge=1, le=500, description="How many merchant groups to show the model."
+        default=60, ge=1, le=500, description="How many merchant groups to show the model."
     )
 
 
@@ -109,7 +109,7 @@ class BuildChartResponse(BaseModel):
     applied: bool = False
 
 
-# --- items / accounts ---------------------------------------------------
+# --- connections / accounts ---------------------------------------------------
 
 
 class LinkTokenRequest(BaseModel):
@@ -118,12 +118,17 @@ class LinkTokenRequest(BaseModel):
 
 
 class LinkTokenOut(BaseModel):
+    #: Where to send the browser, and what the face must echo back. Fintable
+    #: uses OAuth 2.0 with PKCE, so the face builds the URL itself — the
+    #: challenge must be minted where the verifier can be kept.
+    authorize_url: str = ""
+    redirect_uri: str = ""
+    scopes: str = ""
     link_token: str
     expiration: str
     provider: str
-    #: Which environment the widget should point at (e.g. Teller's
-    #: sandbox/development/production). Empty for a provider with no such
-    #: concept.
+    #: Kept for providers that have such a concept; Fintable does not, and
+    #: sends "" rather than inventing one.
     environment: str = ""
 
 
@@ -134,7 +139,7 @@ class LinkExchange(BaseModel):
     backfill_start_date: date | None = None
 
 
-class ItemOut(ORMModel):
+class ConnectionOut(ORMModel):
     id: uuid.UUID
     business_id: uuid.UUID
     provider: str
@@ -149,7 +154,7 @@ class ItemOut(ORMModel):
 class AccountOut(ORMModel):
     id: uuid.UUID
     business_id: uuid.UUID
-    item_id: uuid.UUID | None
+    connection_id: uuid.UUID | None
     name: str
     account_type: str | None
     #: Whether the bank account holds money (asset) or owes it (liability).
@@ -161,7 +166,7 @@ class AccountOut(ORMModel):
 
 
 class SyncRequest(BaseModel):
-    item_id: uuid.UUID | None = None
+    connection_id: uuid.UUID | None = None
     business_id: uuid.UUID | None = None
     backfill: bool = False
     since: date | None = None
@@ -172,7 +177,7 @@ class SyncRequest(BaseModel):
 
 
 class SyncSummaryOut(BaseModel):
-    item_id: uuid.UUID
+    connection_id: uuid.UUID
     queued_task_id: str | None = None
     pages: int = 0
     inserted: int = 0
@@ -216,7 +221,7 @@ class TransactionPage(BaseModel):
     total: int
     limit: int
     offset: int
-    items: list[TransactionOut]
+    connections: list[TransactionOut]
 
 
 class RecategorizeRequest(BaseModel):

@@ -20,7 +20,15 @@ from books.core.errors import (
     ValidationError,
     WebhookVerificationError,
 )
-from books.faces.api.routes import businesses, health, items, rules, sync, transactions, webhooks
+from books.faces.api.routes import (
+    businesses,
+    connections,
+    health,
+    rules,
+    sync,
+    transactions,
+    webhooks,
+)
 from books.logging import configure_logging, get_logger
 
 log = get_logger(__name__)
@@ -54,7 +62,7 @@ def create_app() -> FastAPI:
     for router in (
         health.router,
         businesses.router,
-        items.router,
+        connections.router,
         sync.router,
         transactions.router,
         rules.router,

@@ -146,7 +146,7 @@ class BooksClient:
         *,
         apply: bool = False,
         proposed: list[dict] | None = None,
-        max_merchants: int = 120,
+        max_merchants: int = 60,
     ) -> dict:
         """Propose (and optionally create) a chart built from synced merchants.
 
@@ -164,7 +164,7 @@ class BooksClient:
     def archive_category(self, category_id: uuid.UUID | str) -> dict:
         return self._request("DELETE", f"/categories/{category_id}")
 
-    # --- linking / items ------------------------------------------------
+    # --- linking / connections ------------------------------------------------
 
     def create_link_token(self, business_id: uuid.UUID | str, provider: str | None = None) -> dict:
         return self._request(
@@ -191,17 +191,17 @@ class BooksClient:
             },
         )
 
-    def list_items(self, business_id: uuid.UUID | str | None = None) -> list[dict]:
-        return self._request("GET", "/items", params={"business_id": business_id})
+    def list_connections(self, business_id: uuid.UUID | str | None = None) -> list[dict]:
+        return self._request("GET", "/connections", params={"business_id": business_id})
 
-    def get_item(self, item_id: uuid.UUID | str) -> dict:
-        return self._request("GET", f"/items/{item_id}")
+    def get_connection(self, connection_id: uuid.UUID | str) -> dict:
+        return self._request("GET", f"/connections/{connection_id}")
 
-    def refresh_accounts(self, item_id: uuid.UUID | str) -> dict:
-        return self._request("POST", f"/items/{item_id}/accounts/refresh")
+    def refresh_accounts(self, connection_id: uuid.UUID | str) -> dict:
+        return self._request("POST", f"/connections/{connection_id}/accounts/refresh")
 
-    def force_refresh(self, item_id: uuid.UUID | str) -> dict:
-        return self._request("POST", f"/items/{item_id}/refresh")
+    def force_refresh(self, connection_id: uuid.UUID | str) -> dict:
+        return self._request("POST", f"/connections/{connection_id}/refresh")
 
     def list_accounts(self, business_id: uuid.UUID | str | None = None) -> list[dict]:
         return self._request("GET", "/accounts", params={"business_id": business_id})
@@ -210,7 +210,7 @@ class BooksClient:
 
     def sync(
         self,
-        item_id: uuid.UUID | str | None = None,
+        connection_id: uuid.UUID | str | None = None,
         business_id: uuid.UUID | str | None = None,
         backfill: bool = False,
         since: date | None = None,
@@ -220,7 +220,7 @@ class BooksClient:
             "POST",
             "/sync",
             json={
-                "item_id": str(item_id) if item_id else None,
+                "connection_id": str(connection_id) if connection_id else None,
                 "business_id": str(business_id) if business_id else None,
                 "backfill": backfill,
                 "since": since.isoformat() if since else None,

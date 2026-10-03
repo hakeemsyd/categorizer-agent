@@ -1,7 +1,7 @@
 """``books`` — the human face.
 
 Every command is a thin call into the core service over HTTP. Nothing here
-knows about Teller, Postgres, or Celery.
+knows about Fintable, Postgres, or Celery.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import typer
 from books import __version__
 from books.faces.cli import console as ui
 from books.faces.cli import context
-from books.faces.cli.commands import business, category, items, link, rules, sync, tx
+from books.faces.cli.commands import business, category, connections, link, rules, sync, tx
 from books.sdk import BooksAPIError
 
 app = typer.Typer(
@@ -23,7 +23,7 @@ app = typer.Typer(
 
 app.add_typer(business.app, name="business", help="Tenants and businesses.")
 app.add_typer(category.app, name="category", help="Chart of accounts.")
-app.add_typer(items.app, name="item", help="Linked institutions and accounts.")
+app.add_typer(connections.app, name="connection", help="Linked institutions and accounts.")
 app.add_typer(rules.app, name="rule", help="Standing categorization rules.")
 app.add_typer(tx.app, name="tx", help="Transactions: list, review, correct.")
 app.command("link")(link.link)

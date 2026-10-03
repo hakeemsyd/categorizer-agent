@@ -37,32 +37,32 @@ async def receive_webhook(provider_name: str, request: Request, session: Session
         raise WebhookVerificationError("Webhook body is not valid JSON") from exc
 
     event = provider.parse_webhook(payload)
-    item = await repo.get_item_by_provider_id(
-        session, provider=provider_name, provider_item_id=event.provider_item_id
+    connection = await repo.get_connection_by_provider_ref(
+        session, provider=provider_name, provider_ref=event.provider_ref
     )
-    if item is None:
+    if connection is None:
         log.warning(
-            "webhook.unknown_item",
+            "webhook.unknown_connection",
             provider=provider_name,
-            provider_item_id=event.provider_item_id,
+            provider_ref=event.provider_ref,
         )
-        return Acknowledgement(ok=True, detail="Unknown item; ignored")
+        return Acknowledgement(ok=True, detail="Unknown connection; ignored")
 
     log.info(
         "webhook.received",
         provider=provider_name,
-        item_id=str(item.id),
+        connection_id=str(connection.id),
         # not `event=`: structlog reserves that key for the log message itself
         event_type=event.event_type,
     )
 
     if event.event_type == EVENT_SYNC_AVAILABLE:
-        get_dispatcher().sync_item(item.id, backfill=False, since=None)
+        get_dispatcher().sync_connection(connection.id, backfill=False, since=None)
         return Acknowledgement(detail="Sync queued")
 
     if event.event_type in (EVENT_ITEM_ERROR, EVENT_ITEM_REVOKED):
-        item.status = "error" if event.event_type == EVENT_ITEM_ERROR else "disconnected"
-        item.last_error = json.dumps(payload.get("error") or event.event_type)[:2000]
-        return Acknowledgement(detail=f"Item marked {item.status}")
+        connection.status = "error" if event.event_type == EVENT_ITEM_ERROR else "disconnected"
+        connection.last_error = json.dumps(payload.get("error") or event.event_type)[:2000]
+        return Acknowledgement(detail=f"Connection marked {connection.status}")
 
     return Acknowledgement(detail="Event ignored")

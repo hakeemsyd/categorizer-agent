@@ -11,7 +11,7 @@ from books.core import repository as repo
 from books.core.accounting import AccountType
 from books.core.categorization import apply_category
 from books.core.errors import ValidationError
-from books.core.sync import link_item, sync_item
+from books.core.sync import link_connection, sync_connection
 from books.providers.fake import FakeState, default_state, make_transaction, reset_fake_state
 
 pytestmark = pytest.mark.db
@@ -29,10 +29,12 @@ async def two_businesses(session, business):
 
 async def _link_and_sync(session, business, token: str, state: FakeState):
     reset_fake_state(state)
-    item = await link_item(session, business=business, provider_name="fake", public_token=token)
-    summary = await sync_item(session, item=item)
+    connection = await link_connection(
+        session, business=business, provider_name="fake", public_token=token
+    )
+    summary = await sync_connection(session, connection=connection)
     await session.commit()
-    return item, summary
+    return connection, summary
 
 
 def _state_for(vendor: str, amount: str) -> FakeState:
@@ -57,11 +59,15 @@ def _state_for(vendor: str, amount: str) -> FakeState:
 
 async def test_each_business_gets_its_own_item_and_accounts(session, two_businesses):
     crafts, studio = two_businesses
-    crafts_item, _ = await _link_and_sync(session, crafts, "pt-crafts", _state_for("AWS", "-100"))
-    studio_item, _ = await _link_and_sync(session, studio, "pt-studio", _state_for("Stripe", "500"))
+    crafts_connection, _ = await _link_and_sync(
+        session, crafts, "pt-crafts", _state_for("AWS", "-100")
+    )
+    studio_connection, _ = await _link_and_sync(
+        session, studio, "pt-studio", _state_for("Stripe", "500")
+    )
 
-    assert crafts_item.business_id == crafts.id
-    assert studio_item.business_id == studio.id
+    assert crafts_connection.business_id == crafts.id
+    assert studio_connection.business_id == studio.id
 
     crafts_accounts = await repo.list_accounts(session, business_id=crafts.id)
     studio_accounts = await repo.list_accounts(session, business_id=studio.id)
@@ -182,18 +188,18 @@ async def test_syncing_all_items_covers_every_business(session, two_businesses):
     await _link_and_sync(session, crafts, "pt-crafts", _state_for("AWS", "-100"))
     await _link_and_sync(session, studio, "pt-studio", _state_for("Stripe", "500"))
 
-    items = await repo.list_items(session, active_only=True)
-    assert {i.business_id for i in items} == {crafts.id, studio.id}
+    connections = await repo.list_connections(session, active_only=True)
+    assert {i.business_id for i in connections} == {crafts.id, studio.id}
 
 
 async def test_one_bank_connection_cannot_serve_two_businesses(session, two_businesses):
     """Re-linking the same institution elsewhere would double-count its money."""
     crafts, studio = two_businesses
     reset_fake_state(default_state(date(2026, 3, 1)))
-    await link_item(session, business=crafts, provider_name="fake", public_token="shared")
+    await link_connection(session, business=crafts, provider_name="fake", public_token="shared")
 
     with pytest.raises(ValidationError, match="already linked"):
-        await link_item(session, business=studio, provider_name="fake", public_token="shared")
+        await link_connection(session, business=studio, provider_name="fake", public_token="shared")
 
 
 async def test_amounts_stay_distinct_per_business(session, two_businesses):

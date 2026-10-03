@@ -12,7 +12,7 @@ from books.core import repository as repo
 from books.core.categorization import apply_category, confirm_category
 from books.core.errors import ValidationError
 from books.core.models import Transaction
-from books.core.sync import sync_item
+from books.core.sync import sync_connection
 
 pytestmark = pytest.mark.db
 
@@ -48,7 +48,7 @@ async def _one_transaction(session, business, vendor: str = "AWS") -> Transactio
 
 
 async def test_apply_category_writes_history_every_time(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     transaction = await _one_transaction(session, business)
     software = chart_of_accounts["Software & Subscriptions"]
@@ -78,7 +78,9 @@ async def test_apply_category_writes_history_every_time(
     assert transaction.category_id == payroll.id
 
 
-async def test_low_confidence_routes_to_review(session, business, chart_of_accounts, linked_item):
+async def test_low_confidence_routes_to_review(
+    session, business, chart_of_accounts, linked_connection
+):
     transaction = await _one_transaction(session, business)
     await apply_category(
         session,
@@ -92,7 +94,7 @@ async def test_low_confidence_routes_to_review(session, business, chart_of_accou
 
 
 async def test_high_confidence_clears_review_but_not_reviewed_at(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     transaction = await _one_transaction(session, business)
     await apply_category(
@@ -107,7 +109,7 @@ async def test_high_confidence_clears_review_but_not_reviewed_at(
 
 
 async def test_human_review_stamps_last_reviewed_at(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     transaction = await _one_transaction(session, business)
     await apply_category(
@@ -123,7 +125,7 @@ async def test_human_review_stamps_last_reviewed_at(
     assert transaction.last_reviewed_at is not None
 
 
-async def test_category_from_another_business_is_refused(session, business, linked_item):
+async def test_category_from_another_business_is_refused(session, business, linked_connection):
     other_business = await repo.create_business(
         session, tenant_id=business.tenant_id, name="Other LLC"
     )
@@ -142,7 +144,9 @@ async def test_category_from_another_business_is_refused(session, business, link
         )
 
 
-async def test_confirming_an_uncategorized_transaction_is_refused(session, business, linked_item):
+async def test_confirming_an_uncategorized_transaction_is_refused(
+    session, business, linked_connection
+):
     transaction = await _one_transaction(session, business)
     with pytest.raises(ValidationError, match="no category"):
         await confirm_category(session, transaction=transaction, actor="cli:hakeem")
@@ -152,7 +156,7 @@ async def test_confirming_an_uncategorized_transaction_is_refused(session, busin
 
 
 async def test_a_non_reviewing_write_is_refused_once_a_human_reviewed(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """The core guard: an agent-style write must never clobber a human's call."""
     transaction = await _one_transaction(session, business)
@@ -173,7 +177,7 @@ async def test_a_non_reviewing_write_is_refused_once_a_human_reviewed(
 
 
 async def test_force_overrides_the_review_protection_deliberately(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     transaction = await _one_transaction(session, business)
     await confirm_category_after_setting(
@@ -192,7 +196,7 @@ async def test_force_overrides_the_review_protection_deliberately(
 
 
 async def test_a_human_write_never_needs_force_even_after_a_prior_review(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """mark_reviewed=True is itself the override — a human correcting their
     own earlier review must never need `force` too."""
@@ -228,7 +232,7 @@ async def confirm_category_after_setting(session, transaction, category_id, *, a
 
 
 async def test_agent_categorizes_and_records_its_rationale(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     transaction = await _one_transaction(session, business)
     outcome = await categorize_transaction(
@@ -246,7 +250,7 @@ async def test_agent_categorizes_and_records_its_rationale(
 
 
 async def test_agent_refuses_a_category_outside_the_chart_of_accounts(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     transaction = await _one_transaction(session, business)
     outcome = await categorize_transaction(
@@ -260,7 +264,9 @@ async def test_agent_refuses_a_category_outside_the_chart_of_accounts(
     assert outcome.needs_review is True
 
 
-async def test_a_standing_rule_beats_the_model(session, business, chart_of_accounts, linked_item):
+async def test_a_standing_rule_beats_the_model(
+    session, business, chart_of_accounts, linked_connection
+):
     await repo.create_rule(
         session,
         business=business,
@@ -285,7 +291,7 @@ async def test_a_standing_rule_beats_the_model(session, business, chart_of_accou
     assert outcome.needs_review is False
 
 
-async def test_no_chart_of_accounts_means_review_not_a_guess(session, business, linked_item):
+async def test_no_chart_of_accounts_means_review_not_a_guess(session, business, linked_connection):
     transaction = await _one_transaction(session, business)
     outcome = await categorize_transaction(
         session, transaction_id=transaction.id, classifier=classifier_returning("Anything")
@@ -296,9 +302,9 @@ async def test_no_chart_of_accounts_means_review_not_a_guess(session, business, 
 
 
 async def test_prompt_includes_the_chart_of_accounts_and_reviewed_precedents(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
-    await sync_item(session, item=linked_item)
+    await sync_connection(session, connection=linked_connection)
     transactions = await repo.list_transactions(
         session, repo.TransactionFilters(business_id=business.id, search="aws", limit=5)
     )
@@ -325,7 +331,9 @@ async def test_prompt_includes_the_chart_of_accounts_and_reviewed_precedents(
 # --- accounting semantics reach the agent -------------------------------
 
 
-async def test_outcome_reports_the_account_type(session, business, chart_of_accounts, linked_item):
+async def test_outcome_reports_the_account_type(
+    session, business, chart_of_accounts, linked_connection
+):
     transaction = await _one_transaction(session, business)
     outcome = await categorize_transaction(
         session,
@@ -338,7 +346,7 @@ async def test_outcome_reports_the_account_type(session, business, chart_of_acco
 
 
 async def test_prompt_states_the_account_type_and_entry_side(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """The model cannot reason about debits without being told which way it goes."""
     spend = await _one_transaction(session, business, vendor="AWS")
@@ -353,7 +361,7 @@ async def test_prompt_states_the_account_type_and_entry_side(
 
 
 async def test_prompt_flips_the_entry_side_for_money_in(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     account = (await repo.list_accounts(session, business_id=business.id))[0]
     transaction_id, _ = await repo.upsert_transaction(
@@ -379,7 +387,7 @@ async def test_prompt_flips_the_entry_side_for_money_in(
 
 
 async def test_a_refund_can_be_credited_to_the_expense_it_came_from(
-    session, business, chart_of_accounts, linked_item
+    session, business, chart_of_accounts, linked_connection
 ):
     """Money in is not always revenue — the model may pick an expense."""
     account = (await repo.list_accounts(session, business_id=business.id))[0]

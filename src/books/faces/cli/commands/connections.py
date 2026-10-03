@@ -11,7 +11,7 @@ app = typer.Typer(no_args_is_help=True)
 
 
 @app.command("list")
-def list_items(
+def list_connections(
     business: str = typer.Option(None, "--business", "-b"),
     all_businesses: bool = typer.Option(False, "--all", help="Every business."),
 ) -> None:
@@ -19,7 +19,7 @@ def list_items(
     try:
         with ui.client() as api:
             business_id = None if all_businesses else _resolve.business_id(api, business)
-            rows = api.list_items(business_id)
+            rows = api.list_connections(business_id)
     except BooksAPIError as exc:
         ui.handle(exc)
         return
@@ -84,12 +84,12 @@ def list_accounts(
 
 
 @app.command("refresh")
-def refresh(item_id: str = typer.Argument(..., help="Item id.")) -> None:
+def refresh(connection_id: str = typer.Argument(..., help="Connection id.")) -> None:
     """Ask the provider for fresh data now (the webhook does the rest)."""
     try:
         with ui.client() as api:
-            api.refresh_accounts(item_id)
-            api.force_refresh(item_id)
+            api.refresh_accounts(connection_id)
+            api.force_refresh(connection_id)
     except BooksAPIError as exc:
         ui.handle(exc)
         return

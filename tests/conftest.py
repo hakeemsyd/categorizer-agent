@@ -8,6 +8,7 @@ unreachable those tests skip rather than fail.
 from __future__ import annotations
 
 import os
+import socket
 from collections.abc import AsyncIterator, Iterator
 from datetime import date
 from pathlib import Path
@@ -84,16 +85,16 @@ async def engine():
     engine = create_async_engine(TEST_DATABASE_URL)
     try:
         async with engine.begin() as connection:
+            # Drop the whole schema, not Base.metadata.drop_all: drop_all only
+            # knows about tables the models still declare, so a renamed or
+            # deleted table survives as an orphan — and its foreign keys then
+            # block dropping the tables that are left. Renaming items to
+            # connections hit exactly that.
+            await connection.execute(text("DROP SCHEMA public CASCADE"))
+            await connection.execute(text("CREATE SCHEMA public"))
             await connection.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-            # Rebuild from the models every run. create_all alone only creates
-            # missing *tables*, so a column added since the last run would be
-            # silently absent and every test would fail on a confusing
-            # "column does not exist" deep inside an unrelated assertion.
-            await connection.run_sync(Base.metadata.drop_all)
-            await connection.execute(text("DROP TYPE IF EXISTS account_type CASCADE"))
-            await connection.execute(text("DROP TYPE IF EXISTS entry_side CASCADE"))
             await connection.run_sync(Base.metadata.create_all)
-    except Exception as exc:  # no database available
+    except (ConnectionRefusedError, OSError, socket.gaierror) as exc:
         await engine.dispose()
         pytest.skip(
             f"Cannot reach the test database at {TEST_DATABASE_URL}\n"
@@ -102,6 +103,12 @@ async def engine():
             "somewhere else.\n"
             "  Until then every database-backed test is SKIPPED, not passing."
         )
+    except Exception:
+        # Anything else is a real problem with the schema itself. Skipping on
+        # it once hid 115 tests behind a message about an unreachable
+        # database that was in fact reachable — so let it fail loudly.
+        await engine.dispose()
+        raise
     yield engine
     await engine.dispose()
 
@@ -174,12 +181,14 @@ async def chart_of_accounts(session, business) -> dict[str, object]:
 
 
 @pytest.fixture
-async def linked_item(session, business, fake_state):
-    from books.core.sync import link_item
+async def linked_connection(session, business, fake_state):
+    from books.core.sync import link_connection
 
-    item = await link_item(session, business=business, provider_name="fake", public_token="pt-1")
+    connection = await link_connection(
+        session, business=business, provider_name="fake", public_token="pt-1"
+    )
     await session.commit()
-    return item
+    return connection
 
 
 @pytest.fixture

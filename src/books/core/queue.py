@@ -13,8 +13,8 @@ from typing import Protocol
 
 
 class Dispatcher(Protocol):
-    def sync_item(
-        self, item_id: uuid.UUID, *, backfill: bool, since: date | None
+    def sync_connection(
+        self, connection_id: uuid.UUID, *, backfill: bool, since: date | None
     ) -> str | None: ...
 
     def categorize_transaction(
@@ -25,10 +25,14 @@ class Dispatcher(Protocol):
 class CeleryDispatcher:
     """Default: hand the work to a Celery worker."""
 
-    def sync_item(self, item_id: uuid.UUID, *, backfill: bool, since: date | None) -> str | None:
-        from books.workers.tasks import sync_item
+    def sync_connection(
+        self, connection_id: uuid.UUID, *, backfill: bool, since: date | None
+    ) -> str | None:
+        from books.workers.tasks import sync_connection
 
-        result = sync_item.delay(str(item_id), backfill, since.isoformat() if since else None)
+        result = sync_connection.delay(
+            str(connection_id), backfill, since.isoformat() if since else None
+        )
         return result.id
 
     def categorize_transaction(
@@ -45,8 +49,10 @@ class RecordingDispatcher:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
 
-    def sync_item(self, item_id: uuid.UUID, *, backfill: bool, since: date | None) -> str | None:
-        self.calls.append(("sync_item", (item_id, backfill, since)))
+    def sync_connection(
+        self, connection_id: uuid.UUID, *, backfill: bool, since: date | None
+    ) -> str | None:
+        self.calls.append(("sync_connection", (connection_id, backfill, since)))
         return None
 
     def categorize_transaction(

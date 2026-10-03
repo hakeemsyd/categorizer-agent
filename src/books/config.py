@@ -36,25 +36,30 @@ class Settings(BaseSettings):
 
     # --- Async work ---
     redis_url: str = "redis://localhost:6379/0"
-    sync_all_items_minutes: int = 60
+    sync_all_connections_minutes: int = 60
 
     # --- Secrets at rest ---
     encryption_key: str | None = None
 
-    # --- Providers ---
-    default_provider: str = "teller"
+    # --- Provider (Fintable: https://fintable.io/docs) ---
+    default_provider: str = "fintable"
 
-    # Teller (https://teller.io/docs). application_id is public — it's the
-    # value Teller Connect embeds client-side, not a secret. The certificate
-    # is what actually authenticates API calls (mutual TLS) and is required
-    # outside sandbox; sandbox accepts requests with no certificate at all.
-    teller_application_id: str | None = None
-    teller_environment: Literal["sandbox", "development", "production"] = "sandbox"
-    teller_base_url: str = "https://api.teller.io"
-    teller_cert_path: str | None = None
-    teller_key_path: str | None = None
-    # HMAC secret from the Teller Dashboard, for verifying webhook signatures.
-    teller_signing_secret: str | None = None
+    #: Public OAuth client id. Fintable is a public client using PKCE — there
+    #: is no client secret, and the docs are explicit that none is ever
+    #: accepted, so do not go looking for one.
+    fintable_client_id: str | None = None
+    fintable_base_url: str = "https://fintable.io"
+    #: Must match a redirect URI registered on the OAuth app. For a loopback
+    #: address Fintable accepts any runtime port (RFC 8252), so registering
+    #: http://127.0.0.1/oauth/callback covers the port below — but the *path*
+    #: is still matched, and "localhost" is rejected outright in favour of the
+    #: literal IP. The CLI serves this address itself during `books link`.
+    fintable_redirect_uri: str = "http://127.0.0.1:8420/oauth/callback"
+    fintable_scopes: str = "read"
+    #: Cursors are bound to the workspace that issued them, so every paged
+    #: read must name the same one. Left unset, the token's default workspace
+    #: is resolved once from /api/v2/me.
+    fintable_workspace_id: str | None = None
 
     # --- Categorization agent ---
     #: Which model provider the agent calls. Qwen by default; Anthropic is
@@ -70,6 +75,13 @@ class Settings(BaseSettings):
     #: Singapore key against the Beijing URL fails authentication, which reads
     #: like a bad key rather than the wrong region.
     qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    #: Which wire format that URL speaks. Qwen is served behind both: Alibaba's
+    #: DashScope exposes the OpenAI format, while some Qwen MaaS endpoints
+    #: (".../apps/anthropic") expose Anthropic's Messages API instead. Getting
+    #: this wrong is a bare 404 — the client posts to /chat/completions when
+    #: the server only answers /v1/messages — so it is explicit rather than
+    #: guessed from the URL. Change it whenever you change qwen_base_url.
+    qwen_api_style: Literal["openai", "anthropic"] = "openai"
 
     anthropic_api_key: str | None = None
     # Only needed if anthropic_api_key is an organization-level key rather
